@@ -69,6 +69,21 @@ func (p *parser) skipNewlines() {
 	}
 }
 
+// expectName consumes an identifier used as a name (argument, variable,
+// function). Reserved words are called out explicitly, because "expected a
+// name, got env" leaves the user wondering why `env` is not a name.
+func (p *parser) expectName(what string) (Token, error) {
+	tok := p.cur()
+	if tok.Kind == Ident {
+		p.advance()
+		return tok, nil
+	}
+	if isKeyword(tok.Kind) {
+		return Token{}, errorf(tok.Pos, "expected %s, got %s; %s is a reserved word", what, tok.Kind, tok.Kind)
+	}
+	return Token{}, errorf(tok.Pos, "expected %s, got %s", what, tok.Kind)
+}
+
 // --- top level -----------------------------------------------------------
 
 func (p *parser) parseProgram() (*Program, error) {
@@ -204,9 +219,9 @@ func (p *parser) parseArgsSection() ([]Arg, error) {
 }
 
 func (p *parser) parseArgDecl() (Arg, error) {
-	nameTok, err := p.expect(Ident)
+	nameTok, err := p.expectName("a name")
 	if err != nil {
-		return Arg{}, errorf(p.cur().Pos, "expected a name, got %s", p.cur().Kind)
+		return Arg{}, err
 	}
 	a := Arg{Pos: nameTok.Pos, Name: nameTok.Text}
 	if _, err := p.expect(Colon); err != nil {
@@ -352,9 +367,9 @@ func startsExpr(k Kind) bool {
 
 func (p *parser) parseLet() (Stmt, error) {
 	t := p.advance() // let
-	nameTok, err := p.expect(Ident)
+	nameTok, err := p.expectName("a variable name after \"let\"")
 	if err != nil {
-		return nil, errorf(p.cur().Pos, "expected a variable name after %s, got %s", KwLet, p.cur().Kind)
+		return nil, err
 	}
 	if _, err := p.expect(Assign); err != nil {
 		return nil, err
@@ -409,16 +424,9 @@ func (p *parser) parseIf() (Stmt, error) {
 
 func (p *parser) parseFn() (Stmt, error) {
 	t := p.advance() // fn
-	nameTok, err := p.expect(Ident)
+	nameTok, err := p.expectName("a function name after \"fn\"")
 	if err != nil {
-		// print/error/string/int/float/bool are keywords, so they are not
-		// usable as function names. Say so, rather than leaving the user to
-		// wonder why a name they can call cannot be declared.
-		if isBuiltinKeyword(p.cur().Kind) {
-			return nil, errorf(p.cur().Pos, "expected a function name after %s, got %s; builtin names are reserved",
-				KwFn, p.cur().Kind)
-		}
-		return nil, errorf(p.cur().Pos, "expected a function name after %s, got %s", KwFn, p.cur().Kind)
+		return nil, err
 	}
 	if _, err := p.expect(LParen); err != nil {
 		return nil, err
@@ -462,9 +470,9 @@ func (p *parser) parseEnv() (Stmt, error) {
 		if p.cur().Kind == EOF {
 			return nil, errorf(t.Pos, "unterminated %s block; missing \"}\"", KwEnv)
 		}
-		nameTok, err := p.expect(Ident)
+		nameTok, err := p.expectName("a variable name in the \"env\" block")
 		if err != nil {
-			return nil, errorf(p.cur().Pos, "expected a variable name in the %s block, got %s", KwEnv, p.cur().Kind)
+			return nil, err
 		}
 		if _, err := p.expect(Assign); err != nil {
 			return nil, err

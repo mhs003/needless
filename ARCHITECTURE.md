@@ -47,7 +47,7 @@ Status key: **done** · **in progress** · **planned**
 | Needle binding | `needle/` | **done** | C ABI access to the model, isolated in a worker subprocess |
 | nscript lexer | `internal/nscript/lexer.go` | **done** | `.nsc` source → tokens |
 | nscript parser | `internal/nscript/parser.go` | **done** | tokens → AST |
-| Command discovery | `internal/commands/` | planned | find `.nsc` files, build the registry |
+| Command discovery | `internal/commands/` | **done** | find `.nsc` files, build the registry |
 | Config | `internal/config/` | planned | config file, fallback command, command paths |
 | Intent | `internal/intent/` | planned | commands → tool schemas; reply → command + args |
 | Runtime | `internal/runtime/` | planned | execute `run` blocks |
@@ -120,6 +120,11 @@ Each entry records *why*, so it is not re-litigated.
 | D14 | A triple-quoted instruction is trimmed of surrounding whitespace; a plain string literal is not. | The whitespace around `"""..."""` is an artefact of where the delimiters sit. A quoted literal was written deliberately and is taken as-is. |
 | D15 | Argument defaults must be literals of the declared type. | A default is applied before execution begins, so it cannot depend on runtime state. Int literals are accepted for `float` because the runtime widens them. |
 | D16 | Functions and call arity are checked at parse time. | A misspelled call or wrong argument count is a mistake in the script, not a runtime condition; catching it at parse time reports the line. |
+| D17 | Discovery is tolerant: a script that fails to parse is recorded in `Registry.Errors` and skipped, while every other command still loads. | One typo in one file should not disable the whole CLI. The CLI reports the failures on stderr and continues. |
+| D18 | Command roots are searched in order and the first root providing an ID wins. | Lets a user's own directory shadow a shared or packaged one without a merge policy. |
+| D19 | A command ID is the path relative to its root, without the extension, using forward slashes (`git/status`). | Derived from the filesystem, so it needs no registry, and stable across platforms. |
+| D20 | A command root that does not exist is not an error. | A fresh install has no commands yet; that is the ordinary state, not a failure. |
+| D21 | Command order is sorted by ID. | The model's tool list must not shuffle between runs, or matching becomes unstable. |
 
 ---
 
@@ -180,6 +185,24 @@ Full list and detail: `needle/BINDINGS.md`.
 | Integer literal too large for `int64` | Parse error from the number conversion. |
 | `exec` without a `<<( ... )<<` block | Parse error naming the interpreter. |
 | Everything inside `<<( ... )<<` | Never parsed. The bytes are carried in `ExecStmt.Body` untouched. |
+
+### Command discovery (`internal/commands`)
+
+| Case | Behaviour |
+|---|---|
+| Root does not exist | Empty registry, no error — the ordinary state of a fresh install. |
+| Root is `""` or blank | Ignored. |
+| Root directory is empty | Empty registry, no error. |
+| Hidden file (`.hidden.nsc`) or hidden directory (`.git/`) | Skipped, so editor and VCS droppings never become commands. |
+| Hidden *root* (e.g. `~/.needless`) | Still walked; only entries below the root are filtered. |
+| Non-`.nsc` file (`notes.txt`, `x.nsc.bak`) | Skipped. |
+| Nested directories | Walked to any depth; ID keeps the path (`a/b/c/deep`). |
+| A root that is a file, not a directory | Handled without panic. |
+| Unreadable file (permissions) | Recorded as a `LoadError`; the rest of the root still loads. |
+| One script fails to parse | Recorded with its path and the syntax error; every other command still loads (D17). |
+| Same ID under two roots | The earlier root wins (D18). |
+| Ordering | Sorted by ID, identical across runs (D21), so the model's tool list is stable. |
+| `Commands()` / `Errors()` | Return copies; a caller cannot mutate the registry's state. |
 
 ### Application
 

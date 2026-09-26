@@ -430,3 +430,26 @@ func TestLexNumbersDoNotEatDots(t *testing.T) {
 		t.Fatalf("texts = %q %q", toks[0].Text, toks[2].Text)
 	}
 }
+
+// isKeyword relies on the keyword constants being contiguous. This pins that
+// invariant, so inserting a non-keyword kind into the middle of the block
+// fails here rather than silently making isKeyword lie.
+func TestKeywordsAreContiguous(t *testing.T) {
+	inRange := map[Kind]bool{}
+	for k := KwInstruction; k <= KwBool; k++ {
+		inRange[k] = true
+	}
+	fromMap := map[Kind]bool{}
+	for name, k := range keywords {
+		fromMap[k] = true
+		if !inRange[k] {
+			t.Errorf("keyword %q maps to %s, outside KwInstruction..KwBool", name, k)
+		}
+		if k.String() == "" {
+			t.Errorf("keyword %q has no display name", name)
+		}
+	}
+	if len(fromMap) != len(inRange) {
+		t.Fatalf("the range holds %d kinds but the keywords map has %d entries", len(inRange), len(fromMap))
+	}
+}

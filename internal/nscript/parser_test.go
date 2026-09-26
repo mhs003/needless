@@ -608,7 +608,37 @@ run {
         print("x")
     }
 }
-`, "builtin names are reserved")
+`, "reserved word")
+}
+
+func TestParseReservedWordAsName(t *testing.T) {
+	wantErrContains(t, `instruction "x"
+args {
+    env: string
+}
+run { print("x") }`, "reserved word")
+
+	wantErrContains(t, `instruction "x"
+run {
+    let if = 1
+}
+`, "reserved word")
+
+	wantErrContains(t, `instruction "x"
+run {
+    env {
+        confirm = 1
+    }
+}
+`, "reserved word")
+
+	// A reserved word is still fine as a call target; only name positions
+	// reject it.
+	mustParse(t, `instruction "x"
+run {
+    print("ok")
+}
+`)
 }
 
 func TestParseErrorCarriesPosition(t *testing.T) {

@@ -13,16 +13,10 @@ var builtins = map[string]int{
 	"bool":   1,
 }
 
-// isBuiltinKeyword reports whether k is a keyword that names a builtin
-// callable. Such keywords cannot introduce a name of their own, which is why
-// they are reserved.
-func isBuiltinKeyword(k Kind) bool {
-	switch k {
-	case KwPrint, KwError, KwString, KwInt, KwFloat, KwBool:
-		return true
-	}
-	return false
-}
+// isKeyword reports whether k is any reserved word. The keyword constants are
+// declared contiguously between KwInstruction and KwBool, and
+// TestKeywordsAreContiguous pins that.
+func isKeyword(k Kind) bool { return k >= KwInstruction && k <= KwBool }
 
 // checkCalls rejects calls to names that are neither builtins nor declared
 // `fn`s, and rejects wrong argument counts. Catching this at parse time turns
