@@ -45,7 +45,7 @@ Status key: **done** · **in progress** · **planned**
 | Component | Path | Status | Responsibility |
 |---|---|---|---|
 | Needle binding | `needle/` | **done** | C ABI access to the model, isolated in a worker subprocess |
-| nscript lexer | `internal/nscript/lexer.go` | planned | `.nsc` source → tokens |
+| nscript lexer | `internal/nscript/lexer.go` | **done** | `.nsc` source → tokens |
 | nscript parser | `internal/nscript/parser.go` | planned | tokens → AST |
 | Command discovery | `internal/commands/` | planned | find `.nsc` files, build the registry |
 | Config | `internal/config/` | planned | config file, fallback command, command paths |
@@ -77,7 +77,7 @@ they are given, no model, no process execution. That keeps them fast to test.
 
 ## nscript v1 language surface
 
-Derived from `.docs/NSCRIPT.md`. This is the complete set the parser must
+Derived from `.dev-docs/NSCRIPT.md`. This is the complete set the parser must
 handle; anything else is a syntax error.
 
 | Construct | Form | Notes |
@@ -112,6 +112,9 @@ Each entry records *why*, so it is not re-litigated.
 | D6 | The fallback is an ordinary nscript command selected by config. | Spec §5. It can be edited or removed without touching the CLI. |
 | D7 | Confirmation is declared by the script, performed by the CLI. | Spec §8. Keeps the language free of UI concerns. |
 | D8 | `n` builds `needle-worker` on demand if missing. | The worker must exist at runtime; asking users to run a second build command is friction. |
+| D9 | The lexer is context-sensitive in exactly one place: the word after `exec`. | An interpreter may be a path (`/usr/bin/php`), and `/` is otherwise division. Using the preceding keyword as context is exact; guessing from the text's shape is not. |
+| D10 | Triple-quoted strings and `<<( )<<` bodies are stored verbatim — no escape processing, no trimming, no re-indenting. | The block body is source for another interpreter; normalising it corrupts it (AGENTS.md trap). Prose whitespace is harmless to the model. |
+| D11 | Newlines are significant tokens; spaces, tabs and `//` comments are not. | Statements are newline-separated with no semicolons (NSCRIPT spec §7). Newline tokens give precise "expected a statement" errors instead of silently gluing two statements together. |
 
 ---
 
@@ -134,6 +137,23 @@ Every entry here has a test. Adding a row without a test is incomplete work
 | Concurrent calls on one `Needle` | Serialised; responses stay paired with requests. |
 
 Full list and detail: `needle/BINDINGS.md`.
+
+### Lexer (`internal/nscript`)
+
+| Case | Behaviour |
+|---|---|
+| `)<<` appears inside an embedded script body | Terminates the block at the first occurrence. nscript never inspects the body, so a body needing a literal `)<<` is not expressible in v1. |
+| `exec` with no interpreter (`exec <<(x)<<`) | Error: `expected an interpreter after "exec"`. |
+| `exec` followed by a newline | The interpreter is required on the same line; the parser reports it. |
+| Interpreter is a path (`/usr/bin/php`) | Lexed as one token, because `exec` sets the context. `<=` / `>>` elsewhere are still operators. |
+| `1.foo` | `1` `.` `foo`, not a malformed float — a `.` only continues a number when a digit follows. |
+| Multi-line block, then a later error | The block advances the line counter, so subsequent positions and errors stay correct. |
+| CRLF source | `\r` is whitespace; `\n` still ends the line. |
+| Non-ASCII source | Columns count runes, so positions match editor columns. |
+| Unknown escape (`"\q"`) | Error, rather than silently dropping the backslash. |
+| Unterminated `"`, `"""`, or `<<(` | Error naming the construct, with the opening position. |
+| Keyword used as a prefix (`runner`, `lets`) | A whole-word identifier, not a keyword. |
+| Empty / whitespace-only / comment-only source | Lexes to newlines then EOF; never an error. |
 
 ### Application
 
@@ -167,13 +187,15 @@ end-to-end test.
 | Model | `models/needle3.cact`, 20 layers, 3072-dim embeddings (untracked) |
 | Engine | `needle/engine/linux-x86_64/libneedle.so` (vendored, self-contained) |
 | Command root | `~/.needless/commands/` |
-| Spec | `.docs/` — local and untracked |
+| Internal spec | `.dev-docs/` — local and untracked; the source of truth for behaviour |
+| User docs | `docs/` — for material aimed at users of `n` (not yet present) |
 
 ---
 
 ## Related documents
 
 - `AGENTS.md` — hard rules for agents working here.
-- `.docs/CLI.md` — authoritative CLI specification (local, v1).
-- `.docs/NSCRIPT.md` — authoritative nscript specification (local, v1).
+- `.dev-docs/CLI.md` — authoritative CLI specification (local, v1).
+- `.dev-docs/NSCRIPT.md` — authoritative nscript specification (local, v1).
 - `needle/BINDINGS.md` — the C ABI, its traps, and the binding's API.
+- `docs/` — user-facing documentation, kept separate from the internal spec.

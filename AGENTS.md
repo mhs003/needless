@@ -14,14 +14,14 @@ through the C ABI binding in `needle/`.
 
 Two specs define v1 and are authoritative:
 
-- `.docs/CLI.md` — the `n` command-line interface
-- `.docs/NSCRIPT.md` — the nscript language (`.nsc` files)
+- `.dev-docs/CLI.md` — the `n` command-line interface
+- `.dev-docs/NSCRIPT.md` — the nscript language (`.nsc` files)
 
 ## Hard rules
 
 ### 1. The spec is read-only
 
-`.docs/CLI.md` and `.docs/NSCRIPT.md` are **v1 and must not be modified**. They
+`.dev-docs/CLI.md` and `.dev-docs/NSCRIPT.md` are **v1 and must not be modified**. They
 are deliberately untracked (see `.git/info/exclude`); they exist only on this
 machine.
 
@@ -102,7 +102,8 @@ When you find a real edge case, it goes in `ARCHITECTURE.md` under "Edge cases"
 
 ```
 go.mod                      module github.com/mhs003/needless
-docs (local, untracked)     .docs/CLI.md, .docs/NSCRIPT.md — the v1 spec
+.dev-docs/                  the v1 spec: CLI.md, NSCRIPT.md (local, untracked)
+docs/                       user-facing documentation (not yet present)
 models/                     needle3.cact (untracked, 29 MiB)
 needle/                     the Needle 3 Go binding (self-contained; see needle/BINDINGS.md)
 cmd/n/                      the `n` executable
@@ -115,6 +116,10 @@ internal/cli/               flag parsing, output, exit codes
 AGENTS.md                   this file
 ARCHITECTURE.md             living system map
 ```
+
+`.dev-docs/` is the internal design spec — the source of truth for behaviour.
+`docs/` is for material aimed at users of `n`. Never merge the two: the spec is
+authoritative and versioned separately from anything user-facing.
 
 ## Traps
 
