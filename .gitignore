@@ -1,0 +1,14 @@
+# Built binaries. Root-anchored so the source directories of the same name
+# (needle/cmd/needle-worker) are never matched.
+/n
+/n.exe
+/needle-worker
+/needle-worker.exe
+
+# Go test and coverage artifacts
+*.test
+*.out
+/coverage.txt
+
+# Local runtime state (user commands, config) if ever placed in-tree
+/.needless/
