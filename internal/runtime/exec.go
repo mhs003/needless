@@ -123,6 +123,13 @@ func collectFns(b *nscript.Block, into map[string]*nscript.FnStmt) {
 
 func (r *runState) runBlock(b *nscript.Block, sc *scope) error {
 	for _, stmt := range b.Stmts {
+		// Check between statements so that a cancelled context stops a script
+		// even when it never reaches an exec block.
+		if r.ctx != nil {
+			if err := r.ctx.Err(); err != nil {
+				return &Error{Pos: stmt.Position(), Msg: "cancelled: " + err.Error(), Code: -1}
+			}
+		}
 		if err := r.execStmt(stmt, sc); err != nil {
 			return err
 		}

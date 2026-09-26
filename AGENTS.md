@@ -70,6 +70,9 @@ go vet ./...        # must be clean
 go test ./...       # must pass
 ```
 
+`make check` runs all three. `make build` produces `n` and `needle-worker`;
+`make doctor` reports where the pieces are.
+
 Then commit. One phase per commit, focused and reviewable. Commit messages end
 with the required co-author trailer and explain **why**, not just what.
 
@@ -81,6 +84,11 @@ Never commit a red tree. Never leave a phase half-migrated.
 data flow, decisions, or handled edge cases must update it **in the same
 commit** as the code. A stale ARCHITECTURE.md is a defect. See the maintenance
 contract at the top of that file.
+
+Its **Known bugs** section is a register of open defects, each with the symptom,
+the cause, the decision that has to be made and where to change the code. Read
+it before working near anything it names. When a bug is fixed, move it to
+"Fixed this session" with a line about the fix — do not just delete it.
 
 ### 6. Discovered edge cases get recorded
 
@@ -106,20 +114,27 @@ When you find a real edge case, it goes in `ARCHITECTURE.md` under "Edge cases"
 
 ```
 go.mod                      module github.com/mhs003/needless
+Makefile                    build, test, install and diagnostics entry points
+README.md                   user-facing quick start and language summary
 .dev-docs/                  the v1 spec: CLI.md, NSCRIPT.md (local, untracked)
-docs/                       user-facing documentation (not yet present)
+docs/                       longer user-facing documentation (not yet present)
 models/                     needle3.cact (untracked, 34 MiB)
 needle/                     the Needle 3 Go binding (self-contained; see needle/BINDINGS.md)
-cmd/n/                      the `n` executable
-internal/nscript/           lexer + parser + AST for .nsc files
-internal/commands/          discovery and the command registry
-internal/config/            configuration, including the fallback command
+cmd/n/                      the `n` executable; wiring only
+internal/cli/               flag parsing, interaction, output, exit codes
 internal/intent/            model integration: prompt -> command + arguments
 internal/runtime/           executes a command's run block
-internal/cli/               flag parsing, output, exit codes
+internal/commands/          discovery and the command registry
+internal/config/            configuration, including the fallback command
+internal/nscript/           lexer + parser + AST for .nsc files
+examples/commands/          example .nsc commands, guarded by a test
 AGENTS.md                   this file
 ARCHITECTURE.md             living system map
 ```
+
+The order above is the dependency order: everything points downward. `cmd/n` is
+deliberately thin — it wires signals and streams and calls `internal/cli`, so
+that every decision the CLI makes is testable without a process.
 
 `.dev-docs/` is the internal design spec — the source of truth for behaviour.
 `docs/` is for material aimed at users of `n`. Never merge the two: the spec is
@@ -140,4 +155,8 @@ Short list of things already known to cost time. Full detail in
 - **An off-topic prompt is a normal outcome, not an error.** The model refuses
   by returning an empty call list. Handle it; fall back per config.
 - **`needle-worker` must exist at runtime.** Build it once with
-  `go build ./needle/cmd/needle-worker`.
+  `make build`, or `go build ./needle/cmd/needle-worker`. It is found beside
+  the `n` binary, so the two belong in the same directory.
+- **Upstream platform directory names are not Go's.** The engine lives under
+  `engine/linux-x86_64/`, not `engine/linux-amd64/`. `needle.platformDirs`
+  translates; do not reintroduce `GOOS+"-"+GOARCH` as a path.

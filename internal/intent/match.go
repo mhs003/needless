@@ -127,6 +127,37 @@ func (m *Matcher) Match(ctx context.Context, prompt string) (Result, error) {
 	return res, nil
 }
 
+// DefaultArgs resolves a command's arguments from its declared defaults alone,
+// with no model turn.
+//
+// This is what a configured fallback runs with: nothing selected it, so there
+// is no model output to read values from. A fallback therefore needs a default
+// for every argument it declares, and the error below says so rather than
+// running the script with a hole in it (D42).
+func DefaultArgs(cmd commands.Command) (map[string]any, error) {
+	out := make(map[string]any, len(cmd.Args()))
+	var missing []string
+
+	for _, arg := range cmd.Args() {
+		if arg.Default == nil {
+			missing = append(missing, arg.Name)
+			continue
+		}
+		v, ok := literalValue(arg.Default)
+		if !ok {
+			return nil, fmt.Errorf("intent: command %q: bad default for %q", cmd.ID, arg.Name)
+		}
+		out[arg.Name] = v
+	}
+
+	if len(missing) > 0 {
+		return nil, fmt.Errorf(
+			"intent: command %q cannot be used as a fallback: %s would need a value, and nothing selects a fallback",
+			cmd.ID, strings.Join(missing, ", "))
+	}
+	return out, nil
+}
+
 // resolveArgs validates the model's arguments against the command's
 // declaration. Every declared argument ends up present: supplied values are
 // coerced, and omitted ones take their default.

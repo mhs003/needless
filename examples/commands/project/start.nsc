@@ -1,0 +1,54 @@
+instruction """
+Start the development server for a project.
+
+Use this command when the user asks to start, run, boot, or launch a
+project's development server.
+"""
+
+confirm false
+
+args {
+    project: string
+    port: int = 8000
+    detached: bool = false
+}
+
+run {
+    env {
+        PROJECT = project
+        PORT = port
+        DETACHED = detached
+    }
+
+    print("Starting " + project + " on port " + string(port))
+
+    if detached {
+        print("It will be left running in the background.")
+    } else {
+        print("It will run in the foreground until stopped.")
+    }
+
+    exec bash <<(
+set -e
+
+if [ ! -d "$PROJECT" ]; then
+    echo "no such directory: $PROJECT" >&2
+    exit 1
+fi
+
+cd "$PROJECT"
+
+# This is an example: it reports what it found rather than starting a real
+# server, so running it is always safe.
+if [ -f package.json ]; then
+    echo "detected a Node project (package.json)"
+    echo "a real command would run: npm run dev -- --port $PORT"
+elif [ -f artisan ]; then
+    echo "detected a Laravel project (artisan)"
+    echo "a real command would run: php artisan serve --port $PORT"
+else
+    echo "no recognised project in $PROJECT" >&2
+    exit 1
+fi
+)<<
+}

@@ -1,0 +1,33 @@
+instruction """
+Report on the environment Needless is running in.
+
+Use this command when the user asks to check the setup, diagnose a
+problem, or see what machine and shell are in use.
+"""
+
+confirm false
+
+run {
+    fn show(label: string, value: string) {
+        print(label + ": " + value)
+    }
+
+    let shell = "bash"
+
+    print("Needless environment")
+    show("shell", shell)
+
+    exec bash <<(
+echo "user: $(id -un)"
+echo "host: $(hostname)"
+echo "os:   $(uname -s)"
+echo "arch: $(uname -m)"
+echo "pwd:  $(pwd)"
+)<<
+
+    if shell == "bash" {
+        print("The examples assume a POSIX shell.")
+    } else {
+        print("Using " + shell + " instead.")
+    }
+}

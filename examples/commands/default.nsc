@@ -1,0 +1,30 @@
+instruction """
+Handle a request that did not match any other command.
+
+This is the configured fallback, not a command the model picks. It runs
+when nothing else matched, so every argument it declares must have a
+default: no model turn selects a fallback to fill one in.
+"""
+
+confirm false
+
+args {
+    note: string = "nothing matched"
+}
+
+run {
+    print("No command matched your request.")
+    print("(" + note + ")")
+    print("")
+
+    exec bash <<(
+dir="${NEEDLESS_COMMANDS:-$HOME/.needless/commands}"
+
+if [ -d "$dir" ]; then
+    echo "Available commands:"
+    find "$dir" -name '*.nsc' | sed "s|^$dir/||; s|\.nsc$||" | sort
+else
+    echo "No command directory at $dir"
+fi
+)<<
+}

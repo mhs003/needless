@@ -38,6 +38,138 @@ actually runs (CLI spec §9, AGENTS.md §2).
 
 ---
 
+## Known bugs (open)
+
+Read this section before touching anything near it. Each entry records the
+symptom, the cause, the decision that has to be made, and where to change the
+code. None of these are fixed yet; they are recorded rather than guessed at.
+
+### B1 — A required string argument can be satisfied by an empty string
+
+**Severity:** high. It turns "I could not tell what you meant" into a confusing
+failure from inside a shell script.
+
+**Observed:**
+
+```
+$ n show me git status
+not a git repository:
+n: git/status: 21:5: bash exited with status 1
+```
+
+**What happened.** The prompt names no project. The model still has to return a
+call, so it filled `project` with the empty string. `intent` accepted that as a
+supplied value, ran the script, and the script's own guard
+(`[ ! -d "$PROJECT/.git" ]`) fired against an empty `$PROJECT`. The user is left
+reading a shell-level failure and exit 1 instead of being told which argument
+was missing.
+
+**Cause, step by step:**
+
+1. `internal/intent/coerce` accepts `""` for a `string` argument. It is a valid
+   Go string, so there is nothing there to reject, and that is arguably right in
+   general.
+2. `internal/intent/resolveArgs` treats *presence* as *satisfaction*. It errors
+   only when an argument is absent (`missing required argument %q`), never when
+   it is present but empty.
+3. So an argument declared without a default — the syntax that means "this
+   script cannot run without a value" — can still silently become `""`.
+
+**Why it matters.** Declaring an argument without a default is the script
+author's way of saying the command is meaningless without it. The empty string
+is exactly the case where the model had no evidence to offer, and it is exactly
+the case that should fall through to the no-match path (and thence to the
+fallback) rather than execute. This is the same class of failure as D28 and D29:
+a value that cannot be used is worse than a clear failure.
+
+**Decision required before fixing.** Is an empty string ever a meaningful value
+for a *required* argument? The recommendation is **no**, with the corollary that
+an argument whose author explicitly wrote `x: string = ""` has opted into an
+empty value and must keep working. Settle this first; it determines the shape of
+the fix.
+
+**Fix sketch (not applied):**
+
+- In `internal/intent/match.go`, in `resolveArgs` — not in `coerce` — after a
+  value has been coerced, if the argument has **no default** and the coerced
+  value is the empty string, return the existing missing-argument error so the
+  caller reports a refusal and takes the fallback path.
+- Leave `coerce` alone. Accepting `""` is correct in isolation; the rule is
+  about what a required slot means, which is `resolveArgs`' job.
+- Decide and document what happens when an argument has a non-empty default and
+  the model explicitly supplies `""`. Treating it as "absent" (and so falling
+  back to the default) is consistent; treating it as an explicit empty is also
+  defensible. Pick one and write it into the decisions table.
+- Tests to add, in `internal/intent/match_test.go`:
+  - a call supplying `{"project": ""}` for a required string must error and must
+    not run;
+  - `x: string = ""` must still accept an empty supplied value;
+  - an omitted optional string must still take its default.
+- Optionally, `internal/commands/examples_test.go` can assert that no shipped
+  example declares a required `string` it cannot sensibly receive.
+
+**Do not "fix" this by giving the example a default.** Changing
+`examples/commands/git/status.nsc` to `project: string = "."` is a reasonable
+change to the example on its own merits — running `git status` in the current
+directory is the common case — but it does not fix B1, it only hides one
+instance of it. Fix the general rule or say explicitly that you chose not to.
+
+### B2 — Observed, not reproduced: the same prompt matching differently
+
+**Severity:** unknown. Recorded because it was seen, and because it was seen
+only once it is not yet a bug report so much as a question.
+
+**Observed.** While exercising the CLI with the shipped examples, the prompt
+`start the server for /home/void/needless on port 3000` resolved to
+`system/cleanup` on one run and to `project/start` on others; on two runs it
+appeared to match nothing at all. The same prompt then resolved to
+`project/start` on eight consecutive runs, and `show the git status of …`
+resolved to `git/status` on eight of eight. The one-off behaviour predates the
+`readResponse` and pipe fixes described under "Fixed this session", so it may
+simply have been a misreading of interleaved output from a failing run.
+
+**Why it is plausible anyway.** Matching is a decode, and the tool list, the
+`system` facts and the prompt all feed it. `systemFact` generates a `date:` fact
+that includes the current minute, so the prefix is not byte-identical between
+runs; that is a real source of variation, however small. With five or fewer
+commands the retrieval head renders the whole toolset, so retrieval is not the
+suspect here.
+
+**What to do next, in order:**
+
+1. Reproduce deliberately: run one prompt fifty times against a fixed command
+   set and tally the chosen command. Do not change any code first.
+2. If it is stable, close this entry with a note saying so. That is a perfectly
+   good outcome and cheaper than an investigation.
+3. If it is not, control for the variable that is known to change: pin
+   `system` in the config to a fixed string and repeat. If the variance
+   disappears, the `date:` fact is the cause and the question becomes whether
+   the fact is worth its cost.
+4. Only then treat it as a matching-quality problem, which would make it a
+   model-behaviour question rather than a Needless bug.
+
+**Do not** paper over this by loosening argument validation or by special-casing
+the examples. Whatever the answer, the plumbing behaved correctly in every run:
+the CLI executed exactly the command the model returned, and enforced the
+confirmation policy of that command.
+
+---
+
+## Fixed this session
+
+Recorded so that they are not re-broken, and so that the reasoning survives.
+
+| Bug | Symptom | Fix |
+|---|---|---|
+| `readResponse` lost the last frame | Startup reported `child exited unexpectedly` instead of the child's real message, intermittently. | The `case <-w.done` branch could win the race against the reader goroutine and discard a frame already sitting in the pipe. Removed it; the reader's EOF produces the same error, after consuming any buffered frame. Regression test: `TestWorkerKeepsTheFinalFrameWhenTheChildExits`. |
+| `Wait()` closed the pipes mid-read | Intermittent `read \|0: file already closed`; `make check` failed roughly one run in twelve. | `StdoutPipe`/`StdinPipe` hand back pipes that `cmd.Wait()` closes, and `Wait` ran from the moment the child started. Replaced with explicit `os.Pipe` passed as `*os.File`, which `Wait` does not touch. |
+| Engine discovery was looking in the wrong place, twice | `n` worked on the development machine but failed with `engine library not found` under a clean `HOME`. | The vendored path was resolved one directory too high, and it used Go's platform spelling (`linux-amd64`) where upstream names the directory `linux-x86_64`. Added `platformDirs`, added executable-relative candidates, and made the test fail rather than skip — it had been skipping past both bugs while the Python cache covered for them. |
+| `exec` ignored its context | Cancelling a request left the embedded script running. | `exec.Command` replaced with `exec.CommandContext`, and the run loop now checks the context between statements so a script with no `exec` is still interruptible. |
+| `parseIf` swallowed the newline after `}` | Any `if` followed by another statement failed to parse. | The `else` lookahead now restores the parser position when there is no `else`. |
+| `--edit-command` printed no path without `$EDITOR` | The user was told to set `$EDITOR` but not told which file. | The path is printed before the hint. |
+
+---
+
 ## Component map
 
 Status key: **done** · **in progress** · **planned**
@@ -51,7 +183,7 @@ Status key: **done** · **in progress** · **planned**
 | Config | `internal/config/` | **done** | config file, fallback command, command paths |
 | Intent | `internal/intent/` | **done** | commands → tool schemas; reply → command + args |
 | Runtime | `internal/runtime/` | **done** | execute `run` blocks |
-| CLI | `internal/cli/`, `cmd/n/` | planned | flags, output, exit codes |
+| CLI | `internal/cli/`, `cmd/n/` | **done** | flags, output, exit codes |
 
 ---
 
@@ -63,24 +195,25 @@ to share `nscript`. This table is generated from the code, not aspirational.
 
 | Layer | Package | Depends on (internal only) |
 |---|---|---|
-| — | `cmd/n` | `internal/cli` *(not yet present)* |
-| 4 | `internal/cli` | `intent`, `runtime`, `commands`, `config` *(not yet present)* |
+| — | `cmd/n` | `internal/cli` |
+| 4 | `internal/cli` | `intent`, `runtime`, `commands`, `config`, `needle` |
 | 3 | `internal/intent` | `commands`, `nscript`, `needle` |
 | 2 | `internal/runtime` | `nscript` |
 | 2 | `internal/commands` | `nscript` |
 | 1 | `internal/nscript` | — |
 | 1 | `internal/config` | — |
-| ext | `needle` | — (imported only by `intent`) |
+| ext | `needle` | — (imported by `cli` and `intent`) |
 
 ```
-cmd/n                          process entry
+cmd/n                          process entry, signal handling
  └─ internal/cli               flags, interaction, exit codes
      ├─ internal/intent ─┬─ internal/commands ─── internal/nscript
      │                   ├─ internal/nscript
      │                   └─ needle
      ├─ internal/runtime ─── internal/nscript
      ├─ internal/commands ── internal/nscript
-     └─ internal/config
+     ├─ internal/config
+     └─ needle
 ```
 
 `internal/nscript` performs no I/O at all: bytes in, AST out.
@@ -193,6 +326,14 @@ Each entry records *why*, so it is not re-litigated.
 | D39 | A child's non-zero exit is a command execution failure carrying that code. | CLI spec §13 gives exit 1 that meaning; the code is preserved so the CLI can pass it on if it wants to. |
 | D40 | `exec` runs under `CommandContext`. | Without it, cancelling the caller's context would leave a long-running embedded script running. Found by a test, not by inspection. |
 | D41 | A child's stdout and stderr stream straight through, unbuffered. | Output from an embedded script appears as it happens; buffering it would make a slow command look hung. |
+| D42 | A configured fallback runs with its own declared defaults; nothing selects it, so it must declare a default for every argument it needs. | The fallback is "a normal nscript command selected by configuration" (CLI spec §5), but no model turn chose it, so there is no output to read values from. A second model pass just to fill a rarely-used command was judged not worth a second 34 MiB worker. |
+| D43 | An unmatched prompt, and a declined confirmation, both exit 1. | CLI spec §13 fixes 0/1/2 and forbids new meanings for v1. Neither case is a usage error, and reporting success would let `n cleanup && …` proceed as though something ran. The spec explicitly allows a distinct code later. |
+| D44 | When the configuration names no `system` facts, Needless supplies a `date:` fact. | Mirrors the reference Python binding. A prompt like "remind me tomorrow" needs a reference date and the model has no other way to obtain one. |
+| D45 | An empty `--list-commands` is exit 0, with a hint on stderr. | It is a successful query, like `ls` on an empty directory. The hint keeps a fresh install from looking like silence. |
+| D46 | A missing `$EDITOR` is not an error: the path is printed instead. | `n --edit` did what it could; failing would imply the user did something wrong. |
+| D47 | Needless' own messages go to stderr; stdout carries only the command's output. | Keeps `n <prompt> | ...` clean. A confirmation prompt is interaction, not output. |
+| D48 | The confirmation never echoes argument values. | A script may declare a password (NSCRIPT spec §14). The command id and the first line of the instruction are enough to decide. |
+| D49 | `internal/cli` takes its streams and a model factory as inputs, and `Main` never calls `os.Exit`. | The whole CLI, including the prompt, confirmation and fallback paths, is then testable without a process or the model. |
 
 ---
 
@@ -338,7 +479,42 @@ Full list and detail: `needle/BINDINGS.md`.
 
 ### CLI (`internal/cli`, `cmd/n`)
 
-Not yet implemented — rows are added when the CLI lands.
+| Case | Behaviour |
+|---|---|
+| No arguments | Usage error, exit 2, with a pointer to `--help`. |
+| Unknown option | Exit 2, naming the option. |
+| Extra argument after `--help` / `--list-commands` | Exit 2; it is almost always a mistake. |
+| `--` | Ends options; everything after is prompt text. |
+| `n run the project` and `n "run the project"` | The same prompt; trailing words are joined with spaces. |
+| Prompt with no commands installed | Exit 1, naming the roots searched. |
+| One command fails to parse | Warning on stderr; the rest still work (D17). |
+| Model matches a command | The command runs; stdout is the command's output only (D47). |
+| Model refuses | Exit 1, with the model's reasoning on stderr. |
+| Model withholds a low-confidence call | Reported as withheld; nothing runs. |
+| Refusal with a fallback configured | The fallback runs with its declared defaults (D42). |
+| Fallback configured but not a known command | Exit 1, naming it. |
+| Fallback needs an argument it has no default for | Exit 1, explaining why it cannot be used as a fallback (D42). |
+| Fallback with no arguments at all | Runs; the empty default set is valid. |
+| `confirm true`, user answers `y`/`yes` | Runs. |
+| `confirm true`, anything else | Exit 1, nothing runs. |
+| `confirm true`, no terminal (EOF on stdin) | Treated as declining — the safe reading of no answer. |
+| `confirm true`, arguments include a password | The values are not echoed (D48). |
+| `confirm false` or not declared | Runs without asking (D12). |
+| Command's run block fails | Exit 1; the failing position and the child's exit status are on stderr. |
+| Command output before a failure | Already on stdout and kept. |
+| `--list-commands` with no commands | Exit 0 with a hint on stderr (D45). |
+| `--new-command <id>` | Creates `<root>/<id>.nsc` from a template that parses. |
+| `--new-command` with no id | Asks on stderr, reads the answer from stdin. |
+| `--new-command` where the file exists | Exit 1; refuses to overwrite. |
+| `--new-command` with a bad id (`../x`, `/abs`, `a/./b`, `-`) | Exit 2; the id never becomes a path unchecked. |
+| `--new-command` with `$EDITOR` set | Opens the template in it. |
+| `--edit-command <id>` | Prints the path and opens it in `$VISUAL`/`$EDITOR`. |
+| `--edit-command` with no id | Lists the commands and reads a number from stdin. |
+| `--edit-command` with an unknown id | Exit 1. |
+| `$EDITOR` unset | Prints the path; not an error (D46). |
+| Ctrl-C during a command | The context is cancelled; the child stops and the script stops between statements. |
+
+### Application
 
 ---
 
@@ -349,21 +525,31 @@ Not yet implemented — rows are added when the CLI lands.
   enough to run on every save.
 - **Table-driven tests** throughout, with malformed input asserted to produce a
   useful line/column error rather than merely "an error".
-- **Fake model** for `internal/intent`: matching is tested by injecting canned
-  replies through the `Completer` interface, so no test needs the 34 MiB model.
+- **Fake model** for `internal/intent` and `internal/cli`: matching is tested by
+  injecting canned replies through the `Completer` interface, so no test needs
+  the 34 MiB model. The CLI takes its streams and a model factory as inputs, so
+  the whole prompt, confirmation and fallback path is exercised hermetically.
 - **Real subprocesses** for `internal/runtime`: `exec` blocks run against the
   machine's `sh`, covering exit codes, stderr routing, cancellation, working
   directory, and the fact that nothing is interpolated into a body.
+- **A guard on the shipped examples** (`internal/commands/examples_test.go`):
+  every example must parse, must be discoverable, must be usable as a fallback,
+  and between them they must use every construct the language has. Examples are
+  documentation, and an example that does not parse is worse than none.
 - **Stub engine** (`needle/internal/stubtest`) for the binding's error paths,
   driven by trigger substrings such as `FAIL_COMPLETE` and `TRUNCATE`.
 - **One real-model test**, `needle.TestRealEngineSmoke`, which loads
   `models/needle3.cact` and is skipped when the model is absent. Point
   `NEEDLE_MODEL` elsewhere to override the path.
-- **A real end-to-end test through the CLI** is still to come, with the CLI.
+
+A test that skips when the thing under test is broken gives false confidence.
+`TestDefaultEnginePathFindsVendoredEngine` used to skip when discovery failed
+and thereby hid two real bugs; it now fails if the vendored engine it knows is
+committed cannot be found.
 
 `gofmt -l .`, `go vet ./...` and `go test ./...` must all be clean before a
 commit, with no skipped tests beyond the ones that legitimately require the
-model (AGENTS.md §4).
+model (AGENTS.md §4). `make check` runs all three.
 
 ---
 
@@ -384,7 +570,8 @@ model (AGENTS.md §4).
 ## Related documents
 
 - `AGENTS.md` — hard rules for agents working here.
+- `README.md` — quick start for users of `n`, and a summary of the language.
 - `.dev-docs/CLI.md` — authoritative CLI specification (local, v1).
 - `.dev-docs/NSCRIPT.md` — authoritative nscript specification (local, v1).
 - `needle/BINDINGS.md` — the C ABI, its traps, and the binding's API.
-- `docs/` — user-facing documentation, kept separate from the internal spec.
+- `docs/` — longer user-facing documentation, kept separate from the spec.

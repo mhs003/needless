@@ -508,6 +508,51 @@ func TestSetMaxNewTokens(t *testing.T) {
 	}
 }
 
+func TestDefaultArgs(t *testing.T) {
+	// A command whose args all have defaults resolves cleanly.
+	allDefault := command(t, "fb", `instruction "x"
+args {
+    note: string = "fallback"
+    count: int = 3
+    flag: bool = false
+}
+run { print("y") }
+`)
+	got, err := DefaultArgs(allDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"note": "fallback", "count": int64(3), "flag": false}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DefaultArgs = %#v, want %#v", got, want)
+	}
+
+	// A command with no args at all resolves to an empty map, not nil, so the
+	// runtime can index it without a nil check.
+	noArgs := command(t, "none", `instruction "x"`+"\nrun { print(\"y\") }")
+	got, err = DefaultArgs(noArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Fatalf("DefaultArgs = %#v, want an empty map", got)
+	}
+}
+
+func TestDefaultArgsRejectsARequiredArgument(t *testing.T) {
+	// deployment's project argument has no default.
+	_, err := DefaultArgs(deployment(t))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "cannot be used as a fallback") {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "project") {
+		t.Fatalf("err = %v, want it to name the argument", err)
+	}
+}
+
 func TestFormatNumber(t *testing.T) {
 	cases := map[float64]string{
 		0:      "0",

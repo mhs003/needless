@@ -1,0 +1,37 @@
+instruction """
+Show the current Git status of a project.
+
+Use this command when the user asks what has changed, what is modified,
+what is staged, or for the git status of a repository.
+"""
+
+confirm false
+
+args {
+    project: string
+    short: bool = true
+}
+
+run {
+    env {
+        PROJECT = project
+        SHORT = short
+    }
+
+    exec bash <<(
+set -e
+
+if [ ! -d "$PROJECT/.git" ]; then
+    echo "not a git repository: $PROJECT" >&2
+    exit 1
+fi
+
+cd "$PROJECT"
+
+if [ "$SHORT" = "true" ]; then
+    git status --short --branch
+else
+    git status
+fi
+)<<
+}

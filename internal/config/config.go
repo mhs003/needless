@@ -23,6 +23,12 @@ const (
 	// CommandsDirName is the default command directory inside DirName
 	// (CLI spec §10).
 	CommandsDirName = "commands"
+
+	// ModelsDirName is the directory the model archive is looked for in.
+	ModelsDirName = "models"
+
+	// WeightsFileName is the model archive's conventional name.
+	WeightsFileName = "needle3.cact"
 )
 
 // Dir returns the per-user state directory, ~/.needless.
@@ -65,6 +71,19 @@ type Config struct {
 	// produces nothing rather than inventing a command (CLI spec §4, §5).
 	Fallback string `json:"fallback"`
 
+	// Weights is the .cact model archive. Empty means DefaultWeightsPath
+	// searches the usual places.
+	Weights string `json:"weights"`
+
+	// Engine is the libneedle shared library. Empty means the binding's own
+	// discovery order.
+	Engine string `json:"engine"`
+
+	// System holds environment facts handed to the model, in the
+	// "date: ...; locale: ..." form. Empty means Needless supplies a date
+	// fact, mirroring the reference Python binding (D44).
+	System string `json:"system"`
+
 	// Path records where the configuration was read from, or is empty when
 	// the defaults were used. It is not part of the file.
 	Path string `json:"-"`
@@ -77,6 +96,38 @@ func (c Config) Roots() ([]string, error) {
 		return c.CommandRoots, nil
 	}
 	return DefaultCommandRoots()
+}
+
+// DefaultWeightsPath searches for the model archive, in this order:
+//
+//  1. <executable dir>/models/needle3.cact
+//  2. <executable dir>/.needless/models/needle3.cact
+//  3. <working dir>/models/needle3.cact
+//  4. ~/.needless/models/needle3.cact
+//
+// The working directory is checked so that `go run ./cmd/n` from the repo root
+// finds models/ in a checkout.
+func DefaultWeightsPath() (string, bool) {
+	var candidates []string
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(dir, ModelsDirName, WeightsFileName),
+			filepath.Join(dir, DirName, ModelsDirName, WeightsFileName),
+		)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, ModelsDirName, WeightsFileName))
+	}
+	if dir, err := Dir(); err == nil {
+		candidates = append(candidates, filepath.Join(dir, ModelsDirName, WeightsFileName))
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, true
+		}
+	}
+	return "", false
 }
 
 // ExpandPath expands a leading ~ and cleans the result. Relative paths are

@@ -60,6 +60,18 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.CommandRoots = roots
+
+	for _, p := range []*string{&cfg.Weights, &cfg.Engine} {
+		if *p == "" {
+			continue
+		}
+		expanded, err := ExpandPath(*p)
+		if err != nil {
+			return Config{}, err
+		}
+		*p = expanded
+	}
+
 	cfg.Path = path
 	return cfg, nil
 }

@@ -1,0 +1,51 @@
+instruction """
+Remove a project's generated build output and caches.
+
+Use this command when the user asks to clean, clear, or remove generated
+build files, compiled output, or build caches.
+"""
+
+confirm true
+
+args {
+    project: string
+    dry_run: bool = false
+}
+
+run {
+    env {
+        PROJECT = project
+        DRY_RUN = dry_run
+    }
+
+    print("Cleaning generated output in " + project)
+
+    exec bash <<(
+set -e
+
+if [ ! -d "$PROJECT" ]; then
+    echo "no such directory: $PROJECT" >&2
+    exit 1
+fi
+
+cd "$PROJECT"
+
+found=0
+for dir in build dist .cache; do
+    if [ ! -e "$dir" ]; then
+        continue
+    fi
+    found=1
+    if [ "$DRY_RUN" = "true" ]; then
+        echo "would remove $dir"
+    else
+        echo "removing $dir"
+        rm -rf "$dir"
+    fi
+done
+
+if [ "$found" = "0" ]; then
+    echo "nothing to clean"
+fi
+)<<
+}
