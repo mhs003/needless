@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,15 +82,27 @@ func TestNewRejectsBadConfig(t *testing.T) {
 }
 
 func TestDefaultEnginePathFindsVendoredEngine(t *testing.T) {
-	path, err := DefaultEnginePath()
+	// The repository ships the engine for this platform, so discovery must
+	// find it. This test used to skip when discovery failed, which hid two
+	// real bugs at once: the vendored path was resolved one directory too
+	// high, and it used Go's platform spelling ("linux-amd64") where upstream
+	// names the directory "linux-x86_64". The Python package cache on the
+	// developer's machine was covering for both.
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate this source file")
+	}
+	vendored := filepath.Join(filepath.Dir(thisFile), "engine", platformDirs()[0], libraryName())
+	if _, err := os.Stat(vendored); err != nil {
+		t.Skipf("no engine is vendored for %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+
+	got, err := DefaultEnginePath()
 	if err != nil {
-		t.Skipf("engine not found via default discovery: %v", err)
+		t.Fatalf("the engine is vendored at %s but discovery did not find it: %v", vendored, err)
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("DefaultEnginePath returned an unusable path %q: %v", path, err)
-	}
-	if !strings.HasSuffix(path, ".so") && !strings.HasSuffix(path, ".dylib") && !strings.HasSuffix(path, ".dll") {
-		t.Fatalf("unexpected engine file name: %q", path)
+	if got != vendored {
+		t.Errorf("DefaultEnginePath() = %q, want the vendored %q", got, vendored)
 	}
 }
 

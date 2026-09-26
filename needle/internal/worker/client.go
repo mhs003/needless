@@ -95,22 +95,45 @@ func Start(ctx context.Context, workerPath string, cfg Config) (*Worker, error) 
 	// only for the initial handshake below.
 	cmd := exec.Command(path, "--child")
 	cmd.Stderr = os.Stderr
-	stdin, err := cmd.StdinPipe()
+
+	// The pipes are created explicitly rather than with StdinPipe/StdoutPipe.
+	// Wait() closes the pipes those helpers hand back, and it runs in the
+	// goroutine below from the moment the child starts — so a reader could
+	// find its end closed mid-frame ("file already closed") whenever the child
+	// exited quickly, which a startup failure always does. Pipes we own and
+	// pass as *os.File are used directly by the child and are not touched by
+	// Wait(), so the reader sees the child's final frame and then a clean EOF.
+	cliStdin, ourStdin, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("worker: stdin pipe: %w", err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	ourStdout, cliStdout, err := os.Pipe()
 	if err != nil {
+		_ = cliStdin.Close()
+		_ = ourStdin.Close()
 		return nil, fmt.Errorf("worker: stdout pipe: %w", err)
 	}
+	cmd.Stdin = cliStdin
+	cmd.Stdout = cliStdout
+
 	if err := cmd.Start(); err != nil {
+		_ = cliStdin.Close()
+		_ = ourStdin.Close()
+		_ = ourStdout.Close()
+		_ = cliStdout.Close()
 		return nil, fmt.Errorf("worker: start: %w", err)
 	}
 
+	// The parent must not keep the child's ends open, or it would never see
+	// EOF: the child's exit is only visible once every copy of the write end
+	// is closed.
+	_ = cliStdin.Close()
+	_ = cliStdout.Close()
+
 	w := &Worker{
 		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdout),
+		stdin:  ourStdin,
+		stdout: bufio.NewReader(ourStdout),
 		done:   make(chan struct{}),
 	}
 	go func() {
@@ -118,13 +141,13 @@ func Start(ctx context.Context, workerPath string, cfg Config) (*Worker, error) 
 		w.doneOnce.Do(func() { close(w.done) })
 	}()
 
-	if err := writeFrame(stdin, cfg); err != nil {
+	if err := writeFrame(ourStdin, cfg); err != nil {
 		_ = w.kill()
 		return nil, fmt.Errorf("worker: send config: %w", err)
 	}
 
 	// Startup covers dlopen plus reading and mapping the .cact weights, which
-	// takes a moment for the 29 MiB archive. Race it against ctx so a caller
+	// takes a moment for the 34 MiB archive. Race it against ctx so a caller
 	// can give up on a slow or wedged engine.
 	type startupResult struct {
 		resp Response
@@ -314,10 +337,17 @@ func (w *Worker) readResponseLocked(timeout time.Duration) (Response, error) {
 		return r.resp, nil
 	case <-timer:
 		return Response{}, errors.New("worker: timed out waiting for a response")
-	case <-w.done:
-		return Response{}, errors.New("worker: child exited unexpectedly")
 	}
 }
+
+// There is deliberately no `case <-w.done` in the select above. A child that
+// writes its final frame and exits immediately — which is exactly what a
+// startup failure does — closes w.done at almost the same moment, and the
+// select could take that branch before the reader goroutine was ever
+// scheduled, discarding a response that was already in the pipe. The EOF the
+// reader reports when the pipe closes produces the same error, but only after
+// any buffered frame has been consumed, so it is both correct and race-free.
+// Regression test: TestWorkerKeepsTheFinalFrameWhenTheChildExits.
 
 // kill terminates the child and waits for it to be reaped. It deliberately
 // takes no locks so it can be called while a call holds ioMu.

@@ -204,10 +204,20 @@ worker, because the engine has no way to interrupt a generation in flight.
 Engine (`DefaultEnginePath`), in order:
 
 1. `$NEEDLE_ENGINE`
-2. `<module>/engine/<goos>-<goarch>/<libname>` (vendored)
-3. the Python cache at `~/.cache/cactus-needle/v3/*/<libname>`
+2. `<executable dir>/<libname>`
+3. `<executable dir>/engine/<platform>/<libname>`
+4. `<needle package>/engine/<platform>/<libname>` (the vendored copy)
+5. `~/.cache/cactus-needle/v3/*/<libname>` and `.../<platform>/<libname>`
 
 `<libname>` is `libneedle.so` / `libneedle.dylib` / `needle.dll`.
+
+**`<platform>` is upstream's name, not Go's.** `platformDirs()` maps
+`linux/amd64` → `linux-x86_64`, `darwin/arm64` → `macos-arm64`, and so on,
+returning both spellings so either layout works. This matters: looking for
+`linux-amd64` finds nothing, and on a machine with the Python package installed
+the cache silently covers for the mistake. The executable-relative candidates
+come first because a shipped binary has no source tree, and the path recorded
+by `runtime.Caller` only means anything on the machine that compiled it.
 
 Worker binary, in order:
 
@@ -221,6 +231,9 @@ Worker binary, in order:
 ```sh
 go build -o needle-worker ./needle/cmd/needle-worker
 ```
+
+Both binaries belong in the same directory: `n` finds the worker beside itself.
+`make build` does the right thing.
 
 ---
 

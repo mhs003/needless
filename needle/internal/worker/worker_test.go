@@ -249,6 +249,33 @@ func TestWorkerStartupFailures(t *testing.T) {
 	}
 }
 
+// TestWorkerKeepsTheFinalFrameWhenTheChildExits is the regression test for a
+// race in readResponseLocked: a child that writes its last frame and exits
+// immediately made the select take the `w.done` branch before the reader
+// goroutine ran, so the frame was discarded and startup reported "child exited
+// unexpectedly" instead of the real reason. A startup failure is exactly that
+// shape, so this repeats it enough times to hit the race.
+func TestWorkerKeepsTheFinalFrameWhenTheChildExits(t *testing.T) {
+	worker := stubtest.BuildWorker(t)
+	weights := stubtest.WriteWeights(t, t.TempDir(), 7)
+
+	for i := 0; i < 25; i++ {
+		_, err := Start(context.Background(), worker, Config{
+			Library:    filepath.Join(t.TempDir(), "nope.so"),
+			Weights:    weights,
+			BufferSize: 4096,
+		})
+		if err == nil {
+			t.Fatal("expected a startup failure")
+		}
+		// The child explains itself before exiting; that explanation must
+		// survive, not be replaced by a generic "exited unexpectedly".
+		if !strings.Contains(err.Error(), "dlopen") {
+			t.Fatalf("iteration %d: error = %v, want the child's own message about dlopen", i, err)
+		}
+	}
+}
+
 func TestWorkerReportsChildCrash(t *testing.T) {
 	w := startStub(t, 7, "[]", 4096)
 	_, err := w.Complete(context.Background(), "please CRASH now", 8)

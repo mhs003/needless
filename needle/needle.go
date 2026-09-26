@@ -174,24 +174,73 @@ func DefaultEnginePath() (string, error) {
 	return "", fmt.Errorf("needle: engine library not found for %s/%s; set NEEDLE_ENGINE or pass Config.EnginePath", runtime.GOOS, runtime.GOARCH)
 }
 
+// platformDirs maps the Go platform to the directory names the upstream
+// release uses.
+//
+// These deliberately differ: Go says "linux/amd64", upstream says
+// "linux-x86_64". Looking for the Go spelling means the vendored engine is
+// never found, and on a machine with the Python package installed the cache
+// masks that failure. Both spellings are returned so either layout works.
+func platformDirs() []string {
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "linux/amd64":
+		return []string{"linux-x86_64", "linux-amd64"}
+	case "linux/arm64":
+		return []string{"linux-arm64"}
+	case "linux/arm":
+		return []string{"linux-armv7", "linux-arm"}
+	case "linux/riscv64":
+		return []string{"linux-riscv64"}
+	case "linux/mipsle":
+		return []string{"linux-mipsel"}
+	case "darwin/arm64":
+		return []string{"macos-arm64", "darwin-arm64"}
+	case "darwin/amd64":
+		return []string{"macos-x86_64", "darwin-amd64"}
+	case "windows/amd64":
+		return []string{"windows-x86_64", "windows-amd64"}
+	case "windows/arm64":
+		return []string{"windows-arm64"}
+	}
+	return []string{runtime.GOOS + "-" + runtime.GOARCH}
+}
+
 func candidateEnginePaths() []string {
 	lib := libraryName()
-	platform := runtime.GOOS + "-" + runtime.GOARCH
+	dirs := platformDirs()
 	var out []string
 
-	// Beside this source file's module: engine/<platform>/<lib>.
-	if _, file, _, ok := runtime.Caller(0); ok {
-		root := filepath.Dir(filepath.Dir(file)) // .../needle
-		out = append(out, filepath.Join(root, engineDir, platform, lib))
+	// Beside the executable, for an installed or copied deployment. This comes
+	// before the source-relative path: a shipped binary has no source tree,
+	// and the path recorded by runtime.Caller only means anything on the
+	// machine that compiled it.
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		out = append(out, filepath.Join(dir, lib))
+		for _, d := range dirs {
+			out = append(out, filepath.Join(dir, engineDir, d, lib))
+		}
 	}
-	// Python package cache.
+
+	// Beside this source file's package: <needle>/engine/<platform>/<lib>.
+	if _, file, _, ok := runtime.Caller(0); ok {
+		pkgDir := filepath.Dir(file) // .../needle
+		for _, d := range dirs {
+			out = append(out, filepath.Join(pkgDir, engineDir, d, lib))
+		}
+	}
+
+	// The Python package cache, which uses the same upstream names.
 	if home, err := os.UserHomeDir(); err == nil {
 		parent := filepath.Join(home, ".cache", "cactus-needle", "v3")
 		if entries, err := os.ReadDir(parent); err == nil {
 			for _, e := range entries {
-				if e.IsDir() {
-					out = append(out, filepath.Join(parent, e.Name(), lib))
-					out = append(out, filepath.Join(parent, e.Name(), "linux-x86_64", lib))
+				if !e.IsDir() {
+					continue
+				}
+				out = append(out, filepath.Join(parent, e.Name(), lib))
+				for _, d := range dirs {
+					out = append(out, filepath.Join(parent, e.Name(), d, lib))
 				}
 			}
 		}
