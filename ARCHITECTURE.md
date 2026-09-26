@@ -46,7 +46,7 @@ Status key: **done** · **in progress** · **planned**
 |---|---|---|---|
 | Needle binding | `needle/` | **done** | C ABI access to the model, isolated in a worker subprocess |
 | nscript lexer | `internal/nscript/lexer.go` | **done** | `.nsc` source → tokens |
-| nscript parser | `internal/nscript/parser.go` | planned | tokens → AST |
+| nscript parser | `internal/nscript/parser.go` | **done** | tokens → AST |
 | Command discovery | `internal/commands/` | planned | find `.nsc` files, build the registry |
 | Config | `internal/config/` | planned | config file, fallback command, command paths |
 | Intent | `internal/intent/` | planned | commands → tool schemas; reply → command + args |
@@ -115,6 +115,11 @@ Each entry records *why*, so it is not re-litigated.
 | D9 | The lexer is context-sensitive in exactly one place: the word after `exec`. | An interpreter may be a path (`/usr/bin/php`), and `/` is otherwise division. Using the preceding keyword as context is exact; guessing from the text's shape is not. |
 | D10 | Triple-quoted strings and `<<( )<<` bodies are stored verbatim — no escape processing, no trimming, no re-indenting. | The block body is source for another interpreter; normalising it corrupts it (AGENTS.md trap). Prose whitespace is harmless to the model. |
 | D11 | Newlines are significant tokens; spaces, tabs and `//` comments are not. | Statements are newline-separated with no semicolons (NSCRIPT spec §7). Newline tokens give precise "expected a statement" errors instead of silently gluing two statements together. |
+| D12 | Confirmation defaults to **false** when a script does not declare `confirm`. | NSCRIPT spec §14 "Commands that need confirmation declare it" — the policy is opt-in, so a script that says nothing is not gated. |
+| D13 | `instruction` and `run` are required; `instruction` must be non-empty. | The instruction is the only thing the model matches against, and the run block is the only thing that executes. A command missing either is unusable, so it fails at parse time (CLI spec §9). |
+| D14 | A triple-quoted instruction is trimmed of surrounding whitespace; a plain string literal is not. | The whitespace around `"""..."""` is an artefact of where the delimiters sit. A quoted literal was written deliberately and is taken as-is. |
+| D15 | Argument defaults must be literals of the declared type. | A default is applied before execution begins, so it cannot depend on runtime state. Int literals are accepted for `float` because the runtime widens them. |
+| D16 | Functions and call arity are checked at parse time. | A misspelled call or wrong argument count is a mistake in the script, not a runtime condition; catching it at parse time reports the line. |
 
 ---
 
@@ -154,6 +159,27 @@ Full list and detail: `needle/BINDINGS.md`.
 | Unterminated `"`, `"""`, or `<<(` | Error naming the construct, with the opening position. |
 | Keyword used as a prefix (`runner`, `lets`) | A whole-word identifier, not a keyword. |
 | Empty / whitespace-only / comment-only source | Lexes to newlines then EOF; never an error. |
+
+### Parser (`internal/nscript`)
+
+| Case | Behaviour |
+|---|---|
+| Missing `instruction` or `run` | Parse error naming the missing section. A script with either missing cannot be used. |
+| Empty instruction (`instruction ""`) | Parse error; an instruction the model cannot match on is useless. |
+| Duplicate section (`run` twice, `args` twice, …) | Parse error naming the section. |
+| `else` on the line after `}` | Accepted. The lookahead restores the position when there is no `else`, so the newline still terminates the `if` statement. |
+| `else if` chain | Normalised into a `Block` holding one `IfStmt`, so consumers only ever see `*Block` for an else. |
+| Statement not followed by a newline (`print("a") print("b")`) | Parse error; two statements on one line are never silently accepted. |
+| Bare expression as a statement (`1 + 2`) | Parse error; it would have no effect. |
+| `fn print()` / `fn error()` | Parse error: builtin names are reserved, because they are keywords. |
+| Duplicate `fn` name | Parse error, pointing at the first declaration. |
+| Call to an undeclared function (`prnt(x)`) | Parse error at parse time, not a runtime surprise. |
+| Wrong arity, builtin or user `fn` | Parse error. For a user `fn` with defaults, the accepted range is reported. |
+| Default that is not a literal (`p: int = other`) | Parse error; a default cannot depend on runtime state. |
+| Default of the wrong type (`p: int = "s"`) | Parse error naming both types. `p: float = 3` is allowed (int widens). |
+| Integer literal too large for `int64` | Parse error from the number conversion. |
+| `exec` without a `<<( ... )<<` block | Parse error naming the interpreter. |
+| Everything inside `<<( ... )<<` | Never parsed. The bytes are carried in `ExecStmt.Body` untouched. |
 
 ### Application
 
