@@ -50,7 +50,7 @@ Status key: **done** · **in progress** · **planned**
 | Command discovery | `internal/commands/` | **done** | find `.nsc` files, build the registry |
 | Config | `internal/config/` | **done** | config file, fallback command, command paths |
 | Intent | `internal/intent/` | **done** | commands → tool schemas; reply → command + args |
-| Runtime | `internal/runtime/` | planned | execute `run` blocks |
+| Runtime | `internal/runtime/` | **done** | execute `run` blocks |
 | CLI | `internal/cli/`, `cmd/n/` | planned | flags, output, exit codes |
 
 ---
@@ -163,6 +163,14 @@ Each entry records *why*, so it is not re-litigated.
 | D31 | Only the first function call is used. | Needless executes one command per invocation. |
 | D32 | `intent` depends on a `Completer` interface, not on `*needle.Needle`. | Matching is then testable against canned replies, with no 29 MiB model and no subprocess. |
 | D33 | The intent layer reports `Confidence` but applies no threshold. | The spec says to pick a threshold per product; that is the CLI's policy, not the matcher's. |
+| D34 | `+` concatenates two strings or adds two numbers, never mixes them. | The spec's own example writes `string(amount)` rather than relying on implicit conversion. Silently stringifying would hide a mistake that changes what a script means. |
+| D35 | An `exec` body is handed to the interpreter on **stdin**, and `env` values through the **environment**. Nothing is interpolated into the body. | NSCRIPT spec §9 asks to avoid textual substitution into shell source. Passing the bytes unmodified and values out-of-band is the strongest form of that (D2). |
+| D36 | Two `int`s stay an `int`; anything involving a `float` widens. `10 / 3` is `3`, `10.0 / 4.0` is `2.5`. Division by zero is an error. | Predictable and matches what a small orchestration language should do; there is no surprise rounding. |
+| D37 | The run block is a single scope. Functions can read it, and their own locals do not leak out. | A helper can use a `let` from the script without threading it through parameters, and there is no accidental capture in the other direction. `if` blocks share the enclosing scope. |
+| D38 | Recursion is capped at 64 frames. | v1 has no loop construct, so an unbounded `fn` is the one way to exhaust the Go stack. A clear error beats a crash. |
+| D39 | A child's non-zero exit is a command execution failure carrying that code. | CLI spec §13 gives exit 1 that meaning; the code is preserved so the CLI can pass it on if it wants to. |
+| D40 | `exec` runs under `CommandContext`. | Without it, cancelling the caller's context would leave a long-running embedded script running. Found by a test, not by inspection. |
+| D41 | A child's stdout and stderr stream straight through, unbuffered. | Output from an embedded script appears as it happens; buffering it would make a slow command look hung. |
 
 ---
 
@@ -275,6 +283,36 @@ Full list and detail: `needle/BINDINGS.md`.
 | No commands declared | `ErrNoCommands`, returned before the model is invoked at all. |
 | Default of `false`, `0`, or `""` | Still emitted into the schema. A plain `omitempty` would drop exactly the defaults most worth stating. |
 | Tool schema order | Sorted by command ID and byte-identical between runs (D21). |
+
+### Runtime (`internal/runtime`)
+
+| Case | Behaviour |
+|---|---|
+| `+` mixing a string and a number | Error naming both types; there is no implicit stringification (D34). |
+| `10 / 3` and `10.0 / 4.0` | `3` and `2.5`; two ints stay ints (D36). |
+| Division by zero, int or float | Error, rather than an infinity or a panic. |
+| `1 == 1.0` | True; int and float compare numerically. |
+| Comparing a string with a number using `<` | Error, rather than a surprise ordering. |
+| `&&` / `\|\|` | Short-circuit; the right operand is not evaluated when the left decides it. |
+| A function's local | Not visible outside it. |
+| A `let` in the run block | Visible inside functions and inside `if` blocks. |
+| A self-recursive `fn` | Stopped at 64 frames with a clear error (D38). |
+| `return` in the run block | Ends the run cleanly, not as a failure. |
+| `return` inside a function | Ends that function; the caller continues. |
+| `error("...")` | Aborts with the message at the statement's position; nothing after it runs, and anything printed before it is kept. |
+| Undefined variable or a type error | Error carrying the line and column. |
+| `print` output | Goes to the executor's `Out`; nil discards rather than panicking. |
+| `env` binding referenced as a variable | Error: env values feed the child process, they are not nscript variables. |
+| The same env name set twice | The later value wins. |
+| Env values | Rendered from string/int/float/bool; a composite would be a parser-level impossibility. |
+| The body containing `$VAR` or `$name` | Untouched; the shell expands what it recognises, nscript expands nothing (D35). |
+| Child exits non-zero | Error carrying the exit code; output produced before the failure is already on stdout (D39). |
+| Interpreter not on `PATH` | Error naming the interpreter. |
+| Empty `<<()<<` body | Runs the interpreter with empty stdin; not an error. |
+| Context cancelled mid-`exec` | The child is killed and the error says so (D40). |
+| Child stdout / stderr | Streamed live to `Out` / `Err` (D41). |
+| `Executor.Dir` | Sets the child's working directory. |
+| A missing argument value in `args` | Error: the matcher always supplies defaults, so this is a caller bug, not a user one. |
 
 ### Application
 
