@@ -52,6 +52,10 @@ change that lets model output reach an interpreter is a bug, not a feature.
 The application is **pure Go**. No cgo, no C++, no Python, no shelling out to
 the upstream `needle` CLI or its Python API.
 
+cgo appears in exactly one file, `needle/internal/abi/dlopen_unix.go`, whose job
+is loading the engine's shared library. That file is the exception, not a
+precedent: do not add cgo anywhere else.
+
 The `needle` package is the **only** way to reach the model. Do not re-bind the
 ABI elsewhere, do not add a second engine path, do not call `libneedle`
 directly from application code.
@@ -104,7 +108,7 @@ When you find a real edge case, it goes in `ARCHITECTURE.md` under "Edge cases"
 go.mod                      module github.com/mhs003/needless
 .dev-docs/                  the v1 spec: CLI.md, NSCRIPT.md (local, untracked)
 docs/                       user-facing documentation (not yet present)
-models/                     needle3.cact (untracked, 29 MiB)
+models/                     needle3.cact (untracked, 34 MiB)
 needle/                     the Needle 3 Go binding (self-contained; see needle/BINDINGS.md)
 cmd/n/                      the `n` executable
 internal/nscript/           lexer + parser + AST for .nsc files

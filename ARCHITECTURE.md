@@ -57,21 +57,43 @@ Status key: **done** · **in progress** · **planned**
 
 ## Layers
 
-Each layer has exactly one job and depends only on the layer beneath it.
+Dependencies point one way only. The graph is a **DAG, not a chain**: `intent`
+sits above two packages, and `runtime` and `commands` are siblings that happen
+to share `nscript`. This table is generated from the code, not aspirational.
+
+| Layer | Package | Depends on (internal only) |
+|---|---|---|
+| — | `cmd/n` | `internal/cli` *(not yet present)* |
+| 4 | `internal/cli` | `intent`, `runtime`, `commands`, `config` *(not yet present)* |
+| 3 | `internal/intent` | `commands`, `nscript`, `needle` |
+| 2 | `internal/runtime` | `nscript` |
+| 2 | `internal/commands` | `nscript` |
+| 1 | `internal/nscript` | — |
+| 1 | `internal/config` | — |
+| ext | `needle` | — (imported only by `intent`) |
 
 ```
-cmd/n                 process entry; wires flags to cli
-  internal/cli        flag parsing, user interaction, exit codes
-    internal/intent   prompt -> (command, args)          [needs needle]
-    internal/runtime  execute a run block                [needs commands+nscript]
-      internal/commands  discovered .nsc files           [needs nscript]
-        internal/config  where things live, fallback     [needs nothing]
-        internal/nscript lexer + parser + AST            [needs nothing]
-          needle         the model
+cmd/n                          process entry
+ └─ internal/cli               flags, interaction, exit codes
+     ├─ internal/intent ─┬─ internal/commands ─── internal/nscript
+     │                   ├─ internal/nscript
+     │                   └─ needle
+     ├─ internal/runtime ─── internal/nscript
+     ├─ internal/commands ── internal/nscript
+     └─ internal/config
 ```
 
-`internal/nscript` and `internal/config` are pure: no I/O beyond reading files
-they are given, no model, no process execution. That keeps them fast to test.
+`internal/nscript` performs no I/O at all: bytes in, AST out.
+`internal/config` performs none beyond reading one file and the home directory.
+Neither touches the model or starts a process, which is what keeps both fast to
+test. Note that `runtime` deliberately does **not** depend on `commands` — it is
+handed a parsed `*nscript.Program` and knows nothing about the registry.
+
+Re-verify the table with:
+
+```
+go list -f '{{.ImportPath}} -> {{join .Imports ", "}}' ./internal/...
+```
 
 ---
 
@@ -161,7 +183,7 @@ Each entry records *why*, so it is not re-litigated.
 | D29 | Argument coercion is generous where intent is unambiguous (`"3000"` for an int) and strict where it is not (1.5 for an int is refused). | Small models quote numbers and write numbers for strings. Guessing at a fractional integer is not a courtesy, it is a silent wrong answer. |
 | D30 | A refusal is a normal result, not an error. | The model signals "nothing here" with an empty call list (CLI spec §4). Turning that into an error would make the ordinary off-topic case look like a crash. |
 | D31 | Only the first function call is used. | Needless executes one command per invocation. |
-| D32 | `intent` depends on a `Completer` interface, not on `*needle.Needle`. | Matching is then testable against canned replies, with no 29 MiB model and no subprocess. |
+| D32 | `intent` depends on a `Completer` interface, not on `*needle.Needle`. | Matching is then testable against canned replies, with no 34 MiB model and no subprocess. |
 | D33 | The intent layer reports `Confidence` but applies no threshold. | The spec says to pick a threshold per product; that is the CLI's policy, not the matcher's. |
 | D34 | `+` concatenates two strings or adds two numbers, never mixes them. | The spec's own example writes `string(amount)` rather than relying on implicit conversion. Silently stringifying would hide a mistake that changes what a script means. |
 | D35 | An `exec` body is handed to the interpreter on **stdin**, and `env` values through the **environment**. Nothing is interpolated into the body. | NSCRIPT spec §9 asks to avoid textual substitution into shell source. Passing the bytes unmodified and values out-of-band is the strongest form of that (D2). |
@@ -314,26 +336,34 @@ Full list and detail: `needle/BINDINGS.md`.
 | `Executor.Dir` | Sets the child's working directory. |
 | A missing argument value in `args` | Error: the matcher always supplies defaults, so this is a caller bug, not a user one. |
 
-### Application
+### CLI (`internal/cli`, `cmd/n`)
 
-Not yet implemented — rows are added as each phase lands.
+Not yet implemented — rows are added when the CLI lands.
 
 ---
 
 ## Testing strategy
 
-- **Unit tests** for `internal/nscript` and `internal/config`: pure, no model,
-  no subprocesses. Fast enough to run on every save.
-- **Table-driven tests** for the lexer and parser, with malformed-input cases
-  asserted to produce useful line/column errors.
-- **Fake model** for `internal/intent`: the intent layer is tested by injecting
-  canned replies, so tests never depend on the 29 MiB model or inference.
-- **Stub engine** (`needle/internal/stubtest`) for the binding's own error
-  paths.
-- **One real-model end-to-end test**, skipped when the model is absent.
+- **Pure unit tests** for `internal/nscript` (lexer, parser, call checking),
+  `internal/config`, and `internal/commands`: no model, no subprocesses, fast
+  enough to run on every save.
+- **Table-driven tests** throughout, with malformed input asserted to produce a
+  useful line/column error rather than merely "an error".
+- **Fake model** for `internal/intent`: matching is tested by injecting canned
+  replies through the `Completer` interface, so no test needs the 34 MiB model.
+- **Real subprocesses** for `internal/runtime`: `exec` blocks run against the
+  machine's `sh`, covering exit codes, stderr routing, cancellation, working
+  directory, and the fact that nothing is interpolated into a body.
+- **Stub engine** (`needle/internal/stubtest`) for the binding's error paths,
+  driven by trigger substrings such as `FAIL_COMPLETE` and `TRUNCATE`.
+- **One real-model test**, `needle.TestRealEngineSmoke`, which loads
+  `models/needle3.cact` and is skipped when the model is absent. Point
+  `NEEDLE_MODEL` elsewhere to override the path.
+- **A real end-to-end test through the CLI** is still to come, with the CLI.
 
-`go test ./...` must pass without the model present except for the explicit
-end-to-end test.
+`gofmt -l .`, `go vet ./...` and `go test ./...` must all be clean before a
+commit, with no skipped tests beyond the ones that legitimately require the
+model (AGENTS.md §4).
 
 ---
 
@@ -342,9 +372,9 @@ end-to-end test.
 | Thing | Value |
 |---|---|
 | Module | `github.com/mhs003/needless` |
-| Language | Go (pure; no cgo in the application layer) |
-| Model | `models/needle3.cact`, 20 layers, 3072-dim embeddings (untracked) |
-| Engine | `needle/engine/linux-x86_64/libneedle.so` (vendored, self-contained) |
+| Language | Go. cgo appears in exactly one file, `needle/internal/abi/dlopen_unix.go`, which loads the engine; nothing in the application layer uses it. |
+| Model | `models/needle3.cact` — the published full-depth archive, 34 MiB, 20 layers, 3072-dim embeddings (untracked) |
+| Engine | `needle/engine/linux-x86_64/libneedle.so` (vendored, 1.3 MiB, self-contained) |
 | Command root | `~/.needless/commands/` |
 | Internal spec | `.dev-docs/` — local and untracked; the source of truth for behaviour |
 | User docs | `docs/` — for material aimed at users of `n` (not yet present) |

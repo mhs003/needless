@@ -337,7 +337,7 @@ real engine to exercise an error path.
 - **No generation cancellation** inside the engine; cancelling a call ctx kills
   the worker and loses the conversation. Callers that need to interrupt a turn
   should expect to rebuild state.
-- **Model load is eager and per-worker.** `New` maps the weights (29 MiB for the
+- **Model load is eager and per-worker.** `New` maps the weights (34 MiB for the
   20-layer archive). Reuse one `Needle` rather than creating them per request.
 - **No `needle_build`-style depth selection** in the binding: the depth is a
   property of the `.cact` file you pass in, produced by upstream tooling.
