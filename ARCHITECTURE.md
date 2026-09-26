@@ -49,7 +49,7 @@ Status key: **done** · **in progress** · **planned**
 | nscript parser | `internal/nscript/parser.go` | **done** | tokens → AST |
 | Command discovery | `internal/commands/` | **done** | find `.nsc` files, build the registry |
 | Config | `internal/config/` | **done** | config file, fallback command, command paths |
-| Intent | `internal/intent/` | planned | commands → tool schemas; reply → command + args |
+| Intent | `internal/intent/` | **done** | commands → tool schemas; reply → command + args |
 | Runtime | `internal/runtime/` | planned | execute `run` blocks |
 | CLI | `internal/cli/`, `cmd/n/` | planned | flags, output, exit codes |
 
@@ -72,6 +72,32 @@ cmd/n                 process entry; wires flags to cli
 
 `internal/nscript` and `internal/config` are pure: no I/O beyond reading files
 they are given, no model, no process execution. That keeps them fast to test.
+
+---
+
+## Model integration notes
+
+Facts about Needle 3 that shape the code above, recorded so they are not
+rediscovered:
+
+- **Tools are the commands.** Each command becomes one tool: name = command ID,
+  description = `instruction`, parameters = the `args` schema. This is the whole
+  of what the model knows about the command set.
+- **More than five tools switches on the retrieval head.** Needle renders only
+  the top five tools per turn and constrains the grammar to that subset. It is
+  therefore safe to declare many commands, but the top five must be
+  distinguishable from their instructions alone. `tool_index_path` persists the
+  embeddings so they are not recomputed each run.
+- **Confidence may be absent.** It is a calibrated score in [0,1], but weights
+  built by local fine-tuning carry no calibration head and report `null`. The
+  binding models this as `*float64`, and the CLI must treat a missing score as
+  "no opinion" rather than zero.
+- **The engine withholds very low confidence calls.** Anything below about 0.1,
+  or a call that fails a grounding gate, arrives in `suppressed_calls` with
+  `function_calls` empty. This is not an error and must not be executed.
+- **There is no free-text answer.** A refused prompt yields an empty call list.
+  Needless never asks the model to write prose, and never turns model output
+  into a shell command (AGENTS.md §2).
 
 ---
 
@@ -130,6 +156,13 @@ Each entry records *why*, so it is not re-litigated.
 | D24 | A missing or empty configuration file yields the defaults. | A fresh install has no config file, and that is not a failure. |
 | D25 | The `config` package owns every `~/.needless` path; `commands` only walks the roots it is given. | Keeps the layering one-directional: `commands` never imports `config`, and `config` stays free of internal dependencies. |
 | D26 | Blank entries in `command_roots` are dropped. | An empty string would otherwise resolve to the working directory and silently pick up stray `.nsc` files. |
+| D27 | A command ID is used verbatim as the model's tool name. | Verified against the real engine: a name containing `/` is accepted and returned unchanged, so no sanitising or name-mapping is needed. |
+| D28 | An argument the script never declared is an error, not ignored. | Silently dropping it would discard part of what the model understood, and a value that cannot be used is worse than a clear failure. The grammar should make this impossible; if it fires, the toolset and matcher disagree. |
+| D29 | Argument coercion is generous where intent is unambiguous (`"3000"` for an int) and strict where it is not (1.5 for an int is refused). | Small models quote numbers and write numbers for strings. Guessing at a fractional integer is not a courtesy, it is a silent wrong answer. |
+| D30 | A refusal is a normal result, not an error. | The model signals "nothing here" with an empty call list (CLI spec §4). Turning that into an error would make the ordinary off-topic case look like a crash. |
+| D31 | Only the first function call is used. | Needless executes one command per invocation. |
+| D32 | `intent` depends on a `Completer` interface, not on `*needle.Needle`. | Matching is then testable against canned replies, with no 29 MiB model and no subprocess. |
+| D33 | The intent layer reports `Confidence` but applies no threshold. | The spec says to pick a threshold per product; that is the CLI's policy, not the matcher's. |
 
 ---
 
@@ -224,6 +257,24 @@ Full list and detail: `needle/BINDINGS.md`.
 | Blank entry in `command_roots` | Dropped, so it cannot resolve to the working directory (D26). |
 | Unreadable file (permissions) | Error wrapping `fs.ErrPermission`, so callers can branch on it. |
 | `HOME` unset | Error from `Dir()`, rather than silently using a relative path. |
+
+### Intent (`internal/intent`)
+
+| Case | Behaviour |
+|---|---|
+| Prompt matches nothing (refusal) | `Matched=false` and no error; the caller falls back per config (D30). |
+| Engine withholds a low-confidence call | Reported in `Suppressed`, `Matched=false`; nothing is executed. |
+| Model names a command that was not declared | Error. The grammar should make this impossible, so it means the toolset and matcher disagree (D28). |
+| A required argument is absent | Error naming the argument; the script is never run with a missing value. |
+| The model supplies an undeclared argument | Error naming it (D28). |
+| Several function calls in one reply | The first is used, the rest ignored (D31). |
+| Argument quoted as a string (`"3000"`) | Coerced to the declared numeric type. |
+| Number supplied for a string argument | Rendered without a trailing `.0`, so `3000` reads as `3000`. |
+| Fractional value for an `int` argument | Error. Rounding would be a silent wrong answer (D29). |
+| `null`, an array, or an object as an argument | Error; a declared primitive has no meaningful reading of those. |
+| No commands declared | `ErrNoCommands`, returned before the model is invoked at all. |
+| Default of `false`, `0`, or `""` | Still emitted into the schema. A plain `omitempty` would drop exactly the defaults most worth stating. |
+| Tool schema order | Sorted by command ID and byte-identical between runs (D21). |
 
 ### Application
 
