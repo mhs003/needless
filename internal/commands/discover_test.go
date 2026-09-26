@@ -290,19 +290,6 @@ func TestDiscoverUnreadableFile(t *testing.T) {
 	}
 }
 
-func TestDefaultRoot(t *testing.T) {
-	root, err := DefaultRoot()
-	if err != nil {
-		t.Fatalf("DefaultRoot: %v", err)
-	}
-	if !strings.HasSuffix(filepath.ToSlash(root), "/.needless/commands") {
-		t.Fatalf("DefaultRoot() = %q, want it to end in /.needless/commands", root)
-	}
-	if !filepath.IsAbs(root) {
-		t.Fatalf("DefaultRoot() = %q, want an absolute path", root)
-	}
-}
-
 func TestDiscoverReportsEveryBrokenCommand(t *testing.T) {
 	root := t.TempDir()
 	writeCmd(t, root, "one.nsc", "run { print(\"x\") }\n") // missing instruction

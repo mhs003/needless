@@ -48,7 +48,7 @@ Status key: **done** · **in progress** · **planned**
 | nscript lexer | `internal/nscript/lexer.go` | **done** | `.nsc` source → tokens |
 | nscript parser | `internal/nscript/parser.go` | **done** | tokens → AST |
 | Command discovery | `internal/commands/` | **done** | find `.nsc` files, build the registry |
-| Config | `internal/config/` | planned | config file, fallback command, command paths |
+| Config | `internal/config/` | **done** | config file, fallback command, command paths |
 | Intent | `internal/intent/` | planned | commands → tool schemas; reply → command + args |
 | Runtime | `internal/runtime/` | planned | execute `run` blocks |
 | CLI | `internal/cli/`, `cmd/n/` | planned | flags, output, exit codes |
@@ -125,6 +125,11 @@ Each entry records *why*, so it is not re-litigated.
 | D19 | A command ID is the path relative to its root, without the extension, using forward slashes (`git/status`). | Derived from the filesystem, so it needs no registry, and stable across platforms. |
 | D20 | A command root that does not exist is not an error. | A fresh install has no commands yet; that is the ordinary state, not a failure. |
 | D21 | Command order is sorted by ID. | The model's tool list must not shuffle between runs, or matching becomes unstable. |
+| D22 | The configuration file is JSON at `~/.needless/config.json`. | CLI spec §5 leaves the format implementation-defined. JSON keeps the project on the standard library with no third-party parser. |
+| D23 | Unknown configuration keys are an error, not ignored. | A misspelled key in a hand-written file would otherwise silently do nothing, which is the worst possible outcome. |
+| D24 | A missing or empty configuration file yields the defaults. | A fresh install has no config file, and that is not a failure. |
+| D25 | The `config` package owns every `~/.needless` path; `commands` only walks the roots it is given. | Keeps the layering one-directional: `commands` never imports `config`, and `config` stays free of internal dependencies. |
+| D26 | Blank entries in `command_roots` are dropped. | An empty string would otherwise resolve to the working directory and silently pick up stray `.nsc` files. |
 
 ---
 
@@ -203,6 +208,22 @@ Full list and detail: `needle/BINDINGS.md`.
 | Same ID under two roots | The earlier root wins (D18). |
 | Ordering | Sorted by ID, identical across runs (D21), so the model's tool list is stable. |
 | `Commands()` / `Errors()` | Return copies; a caller cannot mutate the registry's state. |
+
+### Config (`internal/config`)
+
+| Case | Behaviour |
+|---|---|
+| File does not exist | Zero `Config` and no error; `Roots()` then yields `~/.needless/commands` (D24). |
+| File is empty or whitespace | Treated the same as missing. |
+| `Load("")` | Reads the default location. |
+| Unknown key (`command_root`) | Error naming the key, so a typo cannot silently do nothing (D23). |
+| Malformed JSON, or a value of the wrong type | Error quoting the file path. |
+| Two JSON documents in one file | Error: it is almost always a truncated edit. |
+| `~/...` in `command_roots` | Expanded to the home directory. |
+| A `~` that is not leading (`/a/~/b`) | Left alone; only a leading tilde expands. |
+| Blank entry in `command_roots` | Dropped, so it cannot resolve to the working directory (D26). |
+| Unreadable file (permissions) | Error wrapping `fs.ErrPermission`, so callers can branch on it. |
+| `HOME` unset | Error from `Dir()`, rather than silently using a relative path. |
 
 ### Application
 

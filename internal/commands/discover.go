@@ -2,7 +2,6 @@ package commands
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,24 +9,6 @@ import (
 
 	"github.com/mhs003/needless/internal/nscript"
 )
-
-const (
-	// ConfigDirName is the per-user directory Needless keeps its state in.
-	ConfigDirName = ".needless"
-
-	// CommandsDirName is the subdirectory of ConfigDirName that holds user
-	// commands (CLI spec §10).
-	CommandsDirName = "commands"
-)
-
-// DefaultRoot returns the conventional command directory, ~/.needless/commands.
-func DefaultRoot() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("commands: locate home directory: %w", err)
-	}
-	return filepath.Join(home, ConfigDirName, CommandsDirName), nil
-}
 
 // Discover walks every root and parses the .nsc files it finds.
 //
@@ -37,6 +18,9 @@ func DefaultRoot() (string, error) {
 // A root that does not exist is not an error: a fresh install has no commands
 // yet. A file that fails to parse is recorded in Errors and skipped, so one
 // broken script never hides the rest.
+//
+// Where the roots come from is the config package's business; discovery only
+// walks what it is given.
 func Discover(roots ...string) *Registry {
 	reg := &Registry{}
 	seen := make(map[string]bool)
