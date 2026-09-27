@@ -563,6 +563,12 @@ Full list and detail: `needle/BINDINGS.md`.
 
 ## Testing strategy
 
+Four layers, in increasing cost. The point of the split is that each layer
+covers something the one below cannot, and only the top layer is slow.
+
+**1. Hermetic unit and integration tests** — everything that does not need the
+model.
+
 - **Pure unit tests** for `internal/nscript` (lexer, parser, call checking),
   `internal/config`, and `internal/commands`: no model, no subprocesses, fast
   enough to run on every save.
@@ -571,7 +577,8 @@ Full list and detail: `needle/BINDINGS.md`.
 - **Fake model** for `internal/intent` and `internal/cli`: matching is tested by
   injecting canned replies through the `Completer` interface, so no test needs
   the 34 MiB model. The CLI takes its streams and a model factory as inputs, so
-  the whole prompt, confirmation and fallback path is exercised hermetically.
+  the whole prompt, confirmation, fallback and management path is exercised
+  hermetically.
 - **Real subprocesses** for `internal/runtime`: `exec` blocks run against the
   machine's `sh`, covering exit codes, stderr routing, cancellation, working
   directory, and the fact that nothing is interpolated into a body.
@@ -581,9 +588,33 @@ Full list and detail: `needle/BINDINGS.md`.
   documentation, and an example that does not parse is worse than none.
 - **Stub engine** (`needle/internal/stubtest`) for the binding's error paths,
   driven by trigger substrings such as `FAIL_COMPLETE` and `TRUNCATE`.
-- **One real-model test**, `needle.TestRealEngineSmoke`, which loads
-  `models/needle3.cact` and is skipped when the model is absent. Point
-  `NEEDLE_MODEL` elsewhere to override the path.
+
+**2. The real `n` binary** (`cmd/n/main_test.go`) — built with `go test` and
+executed as a process, with a temporary `HOME`. Deterministic and needs no
+model, so it is cheap. It covers what calling `internal/cli` in-process cannot:
+that `main` wires the streams, the argument slice and the exit code together.
+
+**3. Real model, end to end** (`internal/cli/e2e_test.go`) — a real prompt
+through the real parser, engine and worker, ending in a command's actual output.
+This is the only layer that exercises the seam between the CLI and the engine;
+all the others stub one side of it. Gated by `testenv.RequireRealModel`, which
+skips under `-short` or when the engine or the 34 MiB archive is missing, so a
+bare checkout still passes.
+
+It also carries the scale case: 60 generated commands, which is past the point
+where the engine renders the whole toolset and has to choose. That one is slow —
+the engine's init cost scales with the tool schema, measured at ~2.4 s for five
+commands against ~12 s for sixty — so `make test-short` exists, and
+`make test-e2e` runs just this layer verbosely.
+
+**4. The binding against the real engine** — `needle.TestRealEngineSmoke` and
+the `abi` tests, described in `needle/BINDINGS.md` §9. Point `NEEDLE_MODEL`
+elsewhere to override the archive the binding looks for.
+
+`internal/testenv` holds the shared machinery for layers 2, 3 and 4: building a
+binary once per test process, finding the module root, and locating the model.
+It exists because the binding's own helpers are behind Go's `internal` rule and
+are not reachable from `internal/cli` or `cmd/n`.
 
 A test that skips when the thing under test is broken gives false confidence.
 `TestDefaultEnginePathFindsVendoredEngine` used to skip when discovery failed
@@ -593,6 +624,13 @@ committed cannot be found.
 `gofmt -l .`, `go vet ./...` and `go test ./...` must all be clean before a
 commit, with no skipped tests beyond the ones that legitimately require the
 model (AGENTS.md §4). `make check` runs all three.
+
+**Expect the full gate to take a couple of minutes**, essentially all of it in
+layers 3 and 4 — each invocation loads a 34 MiB model and runs inference on the
+CPU, and `go test ./...` runs those packages in parallel so they contend with
+each other. `make test-short` is the fast loop while working, `make test-e2e`
+runs only the slow layer, and `make test-race` is worth running after anything
+touching the worker.
 
 ---
 

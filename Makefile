@@ -24,7 +24,7 @@ GOFMT   ?= gofmt
 
 .DEFAULT_GOAL := help
 
-.PHONY: help all build worker test test-short test-race vet fmt fmt-check check \
+.PHONY: help all build worker test test-short test-e2e test-race vet fmt fmt-check check \
         clean install-examples install install-model uninstall doctor run
 
 help: ## Show this help
@@ -45,11 +45,14 @@ build: ## Build n and needle-worker
 worker: ## Build only needle-worker
 	$(GO) build $(GOFLAGS) -o $(WORKER_BIN) ./needle/cmd/needle-worker
 
-test: ## Run the whole test suite
+test: ## Run the whole test suite (includes the real-model tests)
 	$(GO) test $(GOFLAGS) ./...
 
-test-short: ## Run the suite, skipping the tests that need the model
+test-short: ## Run the suite without anything that needs the model
 	$(GO) test $(GOFLAGS) -short ./...
+
+test-e2e: ## Run only the real-model and real-engine tests, verbosely
+	$(GO) test $(GOFLAGS) -count=1 -v -run 'E2E|RealModel|RealEngine' ./internal/... ./cmd/... ./needle/...
 
 test-race: ## Run the suite under the race detector
 	$(GO) test $(GOFLAGS) -race ./...
