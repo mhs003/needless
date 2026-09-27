@@ -91,12 +91,26 @@ the script with a hole in it would fail somewhere deep inside your shell script
 instead.
 
 **A meaningless value counts as "no value".** A model with nothing to put in a
-slot still has to return *something*, and what it returns is `""`, `null`, or a
-bare `false`. None of those is taken at face value: the argument counts as
-unsupplied, so it takes its default or, if it has none, stops the command. If you
-genuinely want an empty value to be allowed, write `note: string = ""` and it
-will be used. A number is different — `3000` written for a string slot really
-does become `"3000"`, because that is a conversion the model may have meant.
+slot still has to return *something*, and what it returns is `""`, `null`, a bare
+`false`, or the quoted word `"false"`. None of those is taken at face value: the
+argument counts as unsupplied, so it takes its default or, if it has none, stops
+the command. The words `false`, `true`, `null`, `none`, `nil` and `undefined`
+are treated this way too, because they name an absence rather than a subject.
+
+Two things are deliberately *not* filler, because they can mean something real:
+a number (`3000` written for a string slot really does become `"3000"`), and any
+other word — `"nothing"` is an ordinary string and arrives untouched.
+
+If you genuinely want one of the filler words as a value, declare it as a
+default and you will get it:
+
+```nsc
+args {
+    literal: string = "false"
+}
+```
+
+That is the same escape hatch as `x: string = ""`.
 
 Names are lower-case words, and they are only identifiers — `project`, not
 `--project`.

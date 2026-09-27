@@ -492,6 +492,14 @@ run { print("y") }
 		{name: "null", value: nil},
 		{name: "false", value: false},
 		{name: "true", value: true},
+		// Observed from the real model: one run in ten sent the *string*
+		// "false" rather than a boolean, which no type-based rule can catch.
+		{name: "the quoted string \"false\"", value: "false"},
+		{name: "the quoted string \"TRUE\"", value: "TRUE"},
+		{name: "the quoted string \"null\"", value: "null"},
+		{name: "the quoted string \"none\"", value: "none"},
+		{name: "the quoted string \"nil\"", value: "nil"},
+		{name: "the quoted string \"undefined\"", value: "undefined"},
 	}
 
 	for _, tc := range cases {
@@ -599,6 +607,73 @@ run { print("y") }
 	}
 	if !res.Matched || res.Args["project"] != "3000" {
 		t.Fatalf("matched = %v, project = %#v; want the number rendered as a string", res.Matched, res.Args["project"])
+	}
+}
+
+// TestMatchFillerWordsAreNotValues pins the escape hatch for the filler-word
+// rule: a command that genuinely wants one of those strings declares it as a
+// default and receives it, because filler falls back to the default.
+func TestMatchFillerWordsAreNotValues(t *testing.T) {
+	cmd := command(t, "x", `instruction "x"
+args {
+    literal: string = "false"
+}
+run { print("y") }
+`)
+	model := &fakeModel{reply: call("x", map[string]any{"literal": "false"})}
+	res, err := New(model, []commands.Command{cmd}).Match(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Matched {
+		t.Fatalf("an argument with a default is always runnable: %+v", res)
+	}
+	if got := res.Args["literal"]; got != "false" {
+		t.Errorf("literal = %#v, want %q", got, "false")
+	}
+}
+
+// TestMatchAQuotedBooleanStillWorksForABoolSlot is the other boundary: "false"
+// in a bool slot is a representation of false, not filler.
+func TestMatchAQuotedBooleanStillWorksForABoolSlot(t *testing.T) {
+	cmd := command(t, "x", `instruction "x"
+args {
+    flag: bool
+}
+run { print("y") }
+`)
+	model := &fakeModel{reply: call("x", map[string]any{"flag": "false"})}
+	res, err := New(model, []commands.Command{cmd}).Match(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Matched || res.Args["flag"] != false {
+		t.Fatalf("matched = %v, flag = %#v; want the quoted boolean read as false", res.Matched, res.Args["flag"])
+	}
+}
+
+// TestMatchABareWordIsStillAValue guards the edge of the word list: anything not
+// on it is an ordinary string and must pass through untouched.
+func TestMatchABareWordIsStillAValue(t *testing.T) {
+	cmd := command(t, "x", `instruction "x"
+args {
+    project: string
+}
+run { print("y") }
+`)
+	for _, word := range []string{"nothing", "nonexistent", "n/a", "0", "yes"} {
+		model := &fakeModel{reply: call("x", map[string]any{"project": word})}
+		res, err := New(model, []commands.Command{cmd}).Match(context.Background(), "go")
+		if err != nil {
+			t.Fatalf("%q: %v", word, err)
+		}
+		if !res.Matched {
+			t.Errorf("%q was treated as filler, but it is an ordinary string", word)
+			continue
+		}
+		if got := res.Args["project"]; got != word {
+			t.Errorf("project = %#v, want %q untouched", got, word)
+		}
 	}
 }
 

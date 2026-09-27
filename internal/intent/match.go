@@ -244,29 +244,61 @@ func resolveArgs(cmd commands.Command, raw json.RawMessage) (map[string]any, []s
 	return out, unfilled, nil
 }
 
+// fillerWords are the string values a model emits to mean "nothing".
+//
+// Observed rather than invented. Probing the real model with a prompt that names
+// no value for a required slot, it returned "" nine times in ten and the literal
+// string "false" the tenth — a quoted negation, not a JSON boolean, so no rule
+// about types could catch it. Neither is a value anyone asked for (D56).
+//
+// The list is deliberately small and closed. An argument that declares a default
+// still receives it, so a command that genuinely wants one of these strings
+// writes `x: string = "false"` and gets it.
+var fillerWords = map[string]bool{
+	"false":     true,
+	"true":      true,
+	"null":      true,
+	"none":      true,
+	"nil":       true,
+	"undefined": true,
+}
+
 // hasNoValue reports whether what the model supplied means "nothing", as opposed
 // to a value that happens to be wrong.
 //
 // A model with nothing to put in a slot still has to return a call, so it fills
-// the slot with something meaningless. Three shapes mean that, and all three are
-// read as absent rather than as a value (D51):
+// the slot with something meaningless. Reading those as values ran scripts with
+// holes in them: B1 first surfaced as an empty `$PROJECT`, then as `cd false`,
+// because a boolean was being stringified into the worst kind of answer — one
+// that looks like a value (D51).
 //
-//   - the empty string, which is how B1 first surfaced;
-//   - JSON null, which is literally "no value";
-//   - a boolean in a slot that is not a boolean, which stringifies to "false" —
-//     the worst possible outcome, because it looks like a value. That one
-//     reached a shell script as `cd false` and failed on a git status prompt.
-//
-// A number for a string slot is deliberately *not* in this list: "3000" for a
-// port is a real conversion the model may well have meant (D29). Only tokens
-// that carry no information about what the user asked for count.
+// A number for a string slot is deliberately *not* filler: "3000" for a port is
+// a real conversion the model may well have meant (D29). Only tokens that say
+// nothing about what the user asked for count.
 func hasNoValue(arg nscript.Arg, raw any) bool {
 	switch v := raw.(type) {
 	case nil:
+		// JSON null is literally "no value".
 		return true
+
 	case string:
-		return v == ""
+		if v == "" {
+			return true
+		}
+		word := strings.ToLower(v)
+		if !fillerWords[word] {
+			return false
+		}
+		// "true" and "false" are legitimate spellings of a boolean, so in a
+		// bool slot they are values. Every other filler word means nothing
+		// anywhere: "null" in a bool slot is still an absence, not a `false`.
+		if arg.Type == nscript.TypeBool && (word == "true" || word == "false") {
+			return false
+		}
+		return true
+
 	case bool:
+		// A boolean is a value in a bool slot and filler anywhere else.
 		return arg.Type != nscript.TypeBool
 	}
 	return false

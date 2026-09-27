@@ -125,29 +125,38 @@ another repository — and it would hide the one shipped example that exercises
 the required-argument path. Left as it is, `n show me git status` now says
 plainly what is missing. Change it if the trade-off is worth it; it is one line.
 
-**A second face, found later by running the real model.** The fix for the empty
-string was not the whole story. The same prompt that originally reported B1 —
-`show me the git status` — failed again, differently:
+**Two more faces, both found by running the real model.** Fixing the empty
+string was not the whole story. The same prompt failed again, in two more ways:
 
 ```
 $ n show me the git status
 not a git repository: false
-n: git/status: 21:5: bash exited with status 1
 ```
 
-`$PROJECT` was the string `"false"`. The model had nothing to put in the slot, so
-it returned JSON `false`, and `coerce` was generously converting a boolean to a
-string — which produced the worst possible outcome, a value that *looks* like one.
-That is why `coerce` no longer converts booleans, and why the rule now covers
-`null` and boolean filler as well as the empty string (D51). Reported twice
-because it was tested against the real model rather than only the fake one; the
-unit tests would never have found either shape.
+`$PROJECT` was the string `"false"`. Probing the engine's raw reply for that
+prompt, rather than guessing, showed it returning `{"project":""}` nine times in
+ten and `{"project":"false"}` the tenth. Two separate causes:
+
+- A JSON *boolean* `false` was being converted to the string `"false"` by
+  `coerce`, which was generously stringifying booleans. That produced the worst
+  possible outcome: a value that looks like one. `coerce` no longer converts
+  booleans at all.
+- A quoted *string* `"false"` cannot be caught by any rule about types — it is a
+  perfectly ordinary string. That needs a different mechanism (D56).
+
+**Why it took two attempts.** Both unit-test rounds only ever fed the matcher the
+shapes I had already thought of. It took a real model to emit the others, and it
+took reading the engine's raw reply — not inferring it from the failure — to tell
+the boolean and the quoted string apart. When a model misbehaves, print what it
+actually returned.
 
 **Tests.** `TestMatchEmptyStringDoesNotSatisfyARequiredArgument` (the first
-regression test), `TestMatchFillerValuesMeanNoValue` (the second, covering `""`,
-`null`, `false` and `true`), `TestMatchFillerValuesFallBackToDefaults`,
-`TestMatchBooleanSlotsStillTakeBooleans` and
-`TestMatchNumbersAreStillCoercedToStrings` (the boundaries of the rule),
+regression test), `TestMatchFillerValuesMeanNoValue` (covering `""`, `null`,
+`false`, `true` and the quoted filler words),
+`TestMatchFillerValuesFallBackToDefaults`, `TestMatchBooleanSlotsStillTakeBooleans`,
+`TestMatchAQuotedBooleanStillWorksForABoolSlot`,
+`TestMatchNumbersAreStillCoercedToStrings`, `TestMatchABareWordIsStillAValue` and
+`TestMatchFillerWordsAreNotValues` (the boundaries of the rule),
 `TestMatchWhitespaceIsAValue`,
 `TestMatchUnfilledArgumentsAreInDeclarationOrder`,
 `TestMatchAnOmittedRequiredArgumentIsARefusal`, and on the CLI side
@@ -356,6 +365,7 @@ Each entry records *why*, so it is not re-litigated.
 | D53 | A command root that exists but is **not a directory** is an error. | Pointing a root at a file is always a mistake, and both silent outcomes were bad: walking a `.nsc` file produced a command whose id was literally `.` (its path relative to itself), and walking a non-`.nsc` file produced nothing with no explanation. D20 still holds next door — a root that does not *exist* is ordinary, because a fresh install has no commands yet. |
 | D54 | The lifecycle is completed with `--remove` and `--show-command`; removal always asks first, and re-checks the path against the command roots. | CLI spec §11 ends at "replace/delete" and only §12 names the flags, but being unable to delete a command you created by accident is a real gap. `--remove` is the one place Needless destroys something the user wrote, so the path is verified against the roots actually in use rather than trusted, and the confirmation defaults to no — which is also the safe reading of a piped, non-interactive invocation. `--show-command` writes the source to stdout, because the source *is* the output. |
 | D55 | v1 ships one engine, for `linux-x86_64`, and every other platform fails immediately with a message naming the directory that was looked for. | Writing a Windows loader that cannot be run or tested on this machine would be shipping unverified code, which is worse than an honest refusal. The message names the platform directory rather than only the override, because Go says `linux/amd64` where upstream says `linux-x86_64` and that mismatch is exactly the mistake anyone porting it would make. |
+| D56 | A small, closed list of **string** values counts as filler alongside the type-based cases (D51): `false`, `true`, `null`, `none`, `nil`, `undefined`, case-insensitively — everywhere except a `bool` slot, where `true`/`false` are real spellings of a boolean. | Observed, not invented. Probing the real model showed it returning the literal string `"false"` for a required slot one run in ten, and `""` the other nine. No rule about types can catch a quoted negation, and that tenth run is exactly the confusing failure B1 was reported for. The list is closed on purpose and an argument that declares a default still receives it, so `x: string = "false"` is the escape hatch for a command that genuinely wants one of these. Expect it may need extending if other words appear; when it does, print the raw reply rather than inferring it. |
 
 ---
 
@@ -506,6 +516,8 @@ Full list and detail: `needle/BINDINGS.md`.
 | Required `string` given `""` | Refused: `Unfilled` names it, `Matched` is false, and the run block never executes (D50, D51). |
 | Required `string` given JSON `null` | Same refusal (D51). |
 | Required `string` given `false` or `true` | Same refusal. Before, `false` was stringified to `"false"` and ran as a real value (D51). |
+| Required `string` given `"false"`, `"null"`, `"none"`, `"nil"` or `"undefined"` | Same refusal, case-insensitively. Observed from the real model, which sends the quoted word where a type rule cannot see it (D56). |
+| An ordinary word like `"nothing"`, `"0"` or `"yes"` | A value; the filler list is closed, so anything not on it passes through untouched (D56). |
 | Required `int` / `float` / `bool` given `""` | Same refusal. The rule is checked before coercion precisely so it does not become a string-only exception. |
 | Required `int` / `float` given a boolean | Same refusal (D51). |
 | A `bool` slot given `false` | A value, not filler — `false` is the whole point of a boolean slot. |
