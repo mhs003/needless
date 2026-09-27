@@ -62,12 +62,16 @@ make build
 
 They belong in the same directory.
 
-## `needle: engine library not found for ...`
+## `needle: no engine for <os>/<arch>`
 
 The engine is not where it was looked for, or your platform has no engine in
-this build. v1 ships one for **linux-x86_64**; other platforms will say so
-plainly rather than failing oddly. Point `engine` in the config or
-`$NEEDLE_ENGINE` at a library to use your own.
+this build. The message names the directory it wanted, which matters because Go
+and upstream spell platforms differently: on a 64-bit Linux machine it looks for
+`engine/linux-x86_64/libneedle.so`, not `linux-amd64`.
+
+v1 ships an engine for **linux-x86_64** only, so on another platform this is
+expected rather than broken. Point `engine` in the config, or `$NEEDLE_ENGINE`,
+at a library to use your own.
 
 ## `n: no model archive found`
 

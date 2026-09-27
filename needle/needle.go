@@ -154,8 +154,12 @@ const (
 // DefaultEnginePath looks for the engine shared library in this order:
 //
 //  1. $NEEDLE_ENGINE
-//  2. <module root>/engine/<goos>-<goarch>/<libname>
-//  3. the Python cache at ~/.cache/cactus-needle/v3/*/<libname>
+//  2. <executable dir>/<libname>, then <executable dir>/engine/<platform>/<libname>
+//  3. <needle package>/engine/<platform>/<libname> — the vendored copy
+//  4. the Python cache at ~/.cache/cactus-needle/v3/*
+//
+// <platform> is upstream's name, not Go's: linux/amd64 looks under
+// engine/linux-x86_64/. See platformDirs.
 //
 // Setting NEEDLE_ENGINE is the escape hatch for deployments that ship the
 // library themselves.
@@ -171,7 +175,19 @@ func DefaultEnginePath() (string, error) {
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("needle: engine library not found for %s/%s; set NEEDLE_ENGINE or pass Config.EnginePath", runtime.GOOS, runtime.GOARCH)
+	return "", engineNotFound()
+}
+
+// engineNotFound explains where an engine would have to be.
+//
+// It names the platform directory and library rather than only the override,
+// because Go says linux/amd64 where upstream says linux-x86_64: that mismatch is
+// the mistake anyone porting this would make, and it is invisible without the
+// directory being spelled out.
+func engineNotFound() error {
+	return fmt.Errorf(
+		"needle: no engine for %s/%s: looked for engine/%s/%s beside the executable and in this package, and in the Python cache; set NEEDLE_ENGINE or Config.EnginePath (see needle/BINDINGS.md, Platforms)",
+		runtime.GOOS, runtime.GOARCH, platformDirs()[0], libraryName())
 }
 
 // platformDirs maps the Go platform to the directory names the upstream

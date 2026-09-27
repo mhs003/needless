@@ -125,8 +125,30 @@ another repository — and it would hide the one shipped example that exercises
 the required-argument path. Left as it is, `n show me git status` now says
 plainly what is missing. Change it if the trade-off is worth it; it is one line.
 
-**Tests.** `TestMatchEmptyStringDoesNotSatisfyARequiredArgument` (the regression
-test), `TestMatchEmptyStringFallsBackToTheDefault`, `TestMatchWhitespaceIsAValue`,
+**A second face, found later by running the real model.** The fix for the empty
+string was not the whole story. The same prompt that originally reported B1 —
+`show me the git status` — failed again, differently:
+
+```
+$ n show me the git status
+not a git repository: false
+n: git/status: 21:5: bash exited with status 1
+```
+
+`$PROJECT` was the string `"false"`. The model had nothing to put in the slot, so
+it returned JSON `false`, and `coerce` was generously converting a boolean to a
+string — which produced the worst possible outcome, a value that *looks* like one.
+That is why `coerce` no longer converts booleans, and why the rule now covers
+`null` and boolean filler as well as the empty string (D51). Reported twice
+because it was tested against the real model rather than only the fake one; the
+unit tests would never have found either shape.
+
+**Tests.** `TestMatchEmptyStringDoesNotSatisfyARequiredArgument` (the first
+regression test), `TestMatchFillerValuesMeanNoValue` (the second, covering `""`,
+`null`, `false` and `true`), `TestMatchFillerValuesFallBackToDefaults`,
+`TestMatchBooleanSlotsStillTakeBooleans` and
+`TestMatchNumbersAreStillCoercedToStrings` (the boundaries of the rule),
+`TestMatchWhitespaceIsAValue`,
 `TestMatchUnfilledArgumentsAreInDeclarationOrder`,
 `TestMatchAnOmittedRequiredArgumentIsARefusal`, and on the CLI side
 `TestMainPromptReportsAnUnfilledArgument` and
@@ -164,7 +186,9 @@ runs.
 
 ## Component map
 
-Status key: **done** · **in progress** · **planned**
+**Everything below is done.** The status column is kept so that a later phase can
+mark work in progress without restructuring the table; nothing currently uses any
+value other than **done**.
 
 | Component | Path | Status | Responsibility |
 |---|---|---|---|
@@ -327,10 +351,11 @@ Each entry records *why*, so it is not re-litigated.
 | D48 | The confirmation never echoes argument values. | A script may declare a password (NSCRIPT spec §14). The command id and the first line of the instruction are enough to decide. |
 | D49 | `internal/cli` takes its streams and a model factory as inputs, and `Main` never calls `os.Exit`. | The whole CLI, including the prompt, confirmation and fallback paths, is then testable without a process or the model. |
 | D50 | A required argument with no usable value is a **refusal**, not an error: `Result.Unfilled` is set, `Matched` is false, and `Command` names the command that could not be filled. | The model did nothing wrong and neither did the user — the prompt simply does not carry enough. Returning an error reported an ordinary outcome as a malfunction, and an error does not reach the fallback, which is precisely the "I could not do that" handler. Malformed replies (undeclared argument, uncoercible value, name outside the declared set) stay errors, because those signal a bug rather than an incomplete prompt. See B1. |
-| D51 | The empty string is the *absence* of a value, uniformly: a required argument given `""` is unfilled; an argument with a default given `""` takes the default; `x: string = ""` still arrives as `""`. | A model with nothing to put in a slot still has to return a call, so it returns `""`. Reading that as a value ran scripts with a hole in them, which is how B1 surfaced. One rule with no exceptions is easier to hold than "empty means absent, except when…". Only the empty string counts — a single space is a value, and trimming it would be Needless editing the user's words. The rule lives in `resolveArgs`, not `coerce`, because it is about what a *required slot* means. |
+| D51 | A value that carries no information means **absence**, not a value: `""`, JSON `null`, and a boolean in a slot that is not a `bool`. A required argument given one of those is unfilled; an argument with a default takes the default; `x: string = ""` still arrives as `""`. | A model with nothing to put in a slot still has to return a call, so it fills the slot with something meaningless. Reading those as values ran scripts with holes in them: B1 first surfaced as an empty `$PROJECT`, then as `cd false`, because a boolean was being stringified into the worst kind of answer — one that looks like a value. Numbers are deliberately excluded, because "3000" for a port is a real conversion the model may well have meant (D29). One rule with no exceptions is easier to hold than a list of them. |
 | D52 | The engine's telemetry is **off by default**: `Start` sets `NEEDLE_TELEMETRY=0` and `DO_NOT_TRACK=1` in the child's environment, but only for variables the caller has not already set. | Needless is a local, on-device tool, and a component that reports usage by default contradicts what the program is for. Doing it at `Start` means every caller gets it without opting in, and checking first means `NEEDLE_TELEMETRY=1` still works as an explicit opt-in — an empty value counting as a choice, not an omission. |
 | D53 | A command root that exists but is **not a directory** is an error. | Pointing a root at a file is always a mistake, and both silent outcomes were bad: walking a `.nsc` file produced a command whose id was literally `.` (its path relative to itself), and walking a non-`.nsc` file produced nothing with no explanation. D20 still holds next door — a root that does not *exist* is ordinary, because a fresh install has no commands yet. |
 | D54 | The lifecycle is completed with `--remove` and `--show-command`; removal always asks first, and re-checks the path against the command roots. | CLI spec §11 ends at "replace/delete" and only §12 names the flags, but being unable to delete a command you created by accident is a real gap. `--remove` is the one place Needless destroys something the user wrote, so the path is verified against the roots actually in use rather than trusted, and the confirmation defaults to no — which is also the safe reading of a piped, non-interactive invocation. `--show-command` writes the source to stdout, because the source *is* the output. |
+| D55 | v1 ships one engine, for `linux-x86_64`, and every other platform fails immediately with a message naming the directory that was looked for. | Writing a Windows loader that cannot be run or tested on this machine would be shipping unverified code, which is worse than an honest refusal. The message names the platform directory rather than only the override, because Go says `linux/amd64` where upstream says `linux-x86_64` and that mismatch is exactly the mistake anyone porting it would make. |
 
 ---
 
@@ -479,13 +504,17 @@ Full list and detail: `needle/BINDINGS.md`.
 | Case | Behaviour |
 |---|---|
 | Required `string` given `""` | Refused: `Unfilled` names it, `Matched` is false, and the run block never executes (D50, D51). |
+| Required `string` given JSON `null` | Same refusal (D51). |
+| Required `string` given `false` or `true` | Same refusal. Before, `false` was stringified to `"false"` and ran as a real value (D51). |
+| Required `int` / `float` / `bool` given `""` | Same refusal. The rule is checked before coercion precisely so it does not become a string-only exception. |
+| Required `int` / `float` given a boolean | Same refusal (D51). |
+| A `bool` slot given `false` | A value, not filler — `false` is the whole point of a boolean slot. |
+| `string` given a number | Coerced and rendered (`3000` → `"3000"`); a real conversion, deliberately not treated as filler (D29). |
 | Required `string` omitted entirely | Same refusal. The schema marks it required, so the grammar should not allow this, but if it happens the outcome is identical. |
-| `string` with a default given `""` | The default is used, not overridden (D51). |
-| `x: string = ""` given `""` | `""`, because the default is what is used. This is the author opting in. |
+| Any argument with a default given filler | The default is used, not overridden (D51). |
+| `x: string = ""` given filler | `""`, because the default is what is used. This is the author opting in. |
 | `string` given `" "` (a space) | A value; it is passed through untouched (D51). |
-| Required `string` given a number | Coerced and rendered (`3000` → `"3000"`); this is not the empty case. |
-| `int` given `""` | Read as absent, exactly like a string: the default if there is one, otherwise the argument is unfilled. The rule is checked before coercion precisely so it does not become a string-only exception (D51). |
-| `bool` / `float` given `""` | Same as `int`. |
+| `string` given `"abc"` for an `int` slot | An error, not a refusal: the model produced something with meaning that is simply wrong, and saying so is more useful than falling back (D29). |
 | Several arguments unfilled | All are named, in declaration order, so the message is stable across runs. |
 | `Unfilled` non-empty | `Args` holds no partial set — the caller either runs with every value or does not run at all. |
 
@@ -558,6 +587,9 @@ Full list and detail: `needle/BINDINGS.md`.
 | `weights` names a file that does not exist | Reported by the binding; Needless does not second-guess an explicit path. |
 | No model archive found anywhere | Error naming the `weights` key and the places that were searched. |
 | An explicit `weights` | Used verbatim; the search order is not consulted. |
+| No engine for this platform | Error naming the platform directory it looked for and the override, not just "set NEEDLE_ENGINE" (D55). |
+| `NEEDLE_ENGINE` set but missing | Error naming the variable and the path, before any candidate is tried. |
+| The engine present beside the executable and in the package | The executable-relative copy wins, because a shipped binary has no source tree. |
 
 ---
 
@@ -659,7 +691,7 @@ touching the worker.
 | Engine | `needle/engine/linux-x86_64/libneedle.so` (vendored, 1.3 MiB, self-contained) |
 | Command root | `~/.needless/commands/` |
 | Internal spec | `.dev-docs/` — local and untracked; the source of truth for behaviour |
-| User docs | `docs/` — for material aimed at users of `n` (not yet present) |
+| User docs | `docs/` — guides for users of `n`, kept separate from the internal spec |
 
 ---
 

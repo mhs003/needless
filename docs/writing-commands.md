@@ -90,9 +90,13 @@ you have configured one, hands over to the fallback. This is deliberate — runn
 the script with a hole in it would fail somewhere deep inside your shell script
 instead.
 
-**An empty string counts as "no value".** A model with nothing to put in a slot
-still has to return something, and it returns `""`. If you genuinely want an
-empty value to be allowed, write `note: string = ""` and it will be used.
+**A meaningless value counts as "no value".** A model with nothing to put in a
+slot still has to return *something*, and what it returns is `""`, `null`, or a
+bare `false`. None of those is taken at face value: the argument counts as
+unsupplied, so it takes its default or, if it has none, stops the command. If you
+genuinely want an empty value to be allowed, write `note: string = ""` and it
+will be used. A number is different — `3000` written for a string slot really
+does become `"3000"`, because that is a conversion the model may have meant.
 
 Names are lower-case words, and they are only identifiers — `project`, not
 `--project`.

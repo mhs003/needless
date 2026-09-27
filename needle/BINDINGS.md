@@ -282,9 +282,11 @@ Behaviour contract worth repeating:
 
 ## 8. Platforms
 
-Only `linux-x86_64` is vendored, because that is what this machine runs.
+**v1 ships an engine for `linux-x86_64` only**, because that is what the machine
+it was built on runs. On any other platform `n` fails immediately with a message
+naming the directory it looked for; it does not limp along or guess.
 
-To add a platform, drop the engine under `engine/<goos>-<goarch>/`:
+To add a platform, drop the engine under `engine/<platform>/`:
 
 | Target | File |
 |---|---|
@@ -296,11 +298,23 @@ To add a platform, drop the engine under `engine/<goos>-<goarch>/`:
 Notes:
 
 - On Linux/macOS the same `dlopen`/`dlsym` trampolines work unchanged.
-- Windows needs a `dlopen_windows.go` using `LoadLibrary`/`GetProcAddress`;
-  `internal/abi/dlopen_other.go` currently fails loudly on non-unix. The
-  trampolines map one-to-one onto the Win32 calls.
+- **Windows needs a new file, and the build tag of the stub must move with it.**
+  `internal/abi/dlopen_other.go` is tagged `!unix`, and Windows is not `unix`, so
+  a new `dlopen_windows.go` would collide with it — duplicate definitions of the
+  same nine symbols. Narrow the stub to `//go:build !unix && !windows` at the same
+  time. `LoadLibrary`/`GetProcAddress` map one-to-one onto the existing
+  trampolines, and `FreeLibrary` is **not** wanted: `Close` deliberately never
+  unloads (§3.2). Two further snags: paths are UTF-16 on Windows, and
+  `engine/needle.h` defines `NEEDLE_API` with a GNU visibility attribute that
+  MSVC does not understand (it is guarded by `#ifndef`, so a build can override
+  it).
 - `needle build --platform <folder> --out <dir>` fetches a platform folder;
   copy the engine from there, or from the Python wheel.
+
+`platformDirs()` in `needle.go` is the one place Go's platform naming is
+translated into upstream's. Do not reintroduce `GOOS + "-" + GOARCH` as a path:
+it silently finds nothing, and on a machine with the Python package installed the
+cache covers for the mistake.
 
 ---
 
@@ -346,12 +360,24 @@ real engine to exercise an error path.
 
 ## 10. Known limitations
 
-- **Windows dynamic loading** is unimplemented (§8).
-- **No generation cancellation** inside the engine; cancelling a call ctx kills
-  the worker and loses the conversation. Callers that need to interrupt a turn
-  should expect to rebuild state.
-- **Model load is eager and per-worker.** `New` maps the weights (34 MiB for the
-  20-layer archive). Reuse one `Needle` rather than creating them per request.
+Deliberate v1 boundaries, not oversights. Each is a decision that could be
+revisited; none is a bug waiting to be found.
+
+- **One platform.** An engine is vendored for `linux-x86_64` only (§8). Other
+  platforms fail with a message naming the directory that was looked for.
+- **Windows dynamic loading is unimplemented**, and adding it needs the stub's
+  build tag moved at the same time or the two files collide (§8).
+- **No generation cancellation inside the engine.** The C ABI has no interrupt,
+  so cancelling a call's context kills the worker and loses the conversation.
+  Callers that need to interrupt a turn should expect to rebuild state.
+- **Model load is eager and per-worker.** `New` maps the weights — 34 MiB for the
+  20-layer archive — and this is the dominant cost of a `Needle`. Measured on the
+  development machine, one `n` invocation with five commands takes about 2.5 s
+  wall clock, essentially all of it here; the figure grows with the tool schema,
+  reaching roughly 12 s with sixty commands, because the whole schema is part of
+  the prefix. Reuse one `Needle` rather than creating them per request; a
+  long-lived process with a socket protocol would be a different shape of
+  program, not a v1 completion.
 - **No `needle_build`-style depth selection** in the binding: the depth is a
   property of the `.cact` file you pass in, produced by upstream tooling.
 - **Telemetry is off by default** (D52). `Start` sets `NEEDLE_TELEMETRY=0` and

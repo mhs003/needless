@@ -463,6 +463,145 @@ run { print("y") }
 	}
 }
 
+// TestMatchFillerValuesMeanNoValue is the regression test for the second face
+// of B1. A model with nothing to put in a slot does not always send ""; it also
+// sends JSON null, or a bare boolean. `false` for a `string` slot used to be
+// coerced to the string "false" — the worst possible outcome, because it looks
+// like a value — and reached a shell script as `cd false`:
+//
+//	$ n show me the git status
+//	not a git repository: false
+//
+// All three shapes mean "nothing" and must leave the argument unfilled (D51).
+func TestMatchFillerValuesMeanNoValue(t *testing.T) {
+	// Each of these declares a required string with no default.
+	cmd := command(t, "git/status", `instruction "Show the git status of a project."
+args {
+    project: string
+    note: string = "defaulted"
+    flag: bool = true
+}
+run { print("y") }
+`)
+
+	cases := []struct {
+		name  string
+		value any
+	}{
+		{name: "empty string", value: ""},
+		{name: "null", value: nil},
+		{name: "false", value: false},
+		{name: "true", value: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeModel{reply: call("git/status", map[string]any{
+				"project": tc.value,
+				"note":    tc.value,
+				"flag":    tc.value,
+			})}
+			res, err := New(model, []commands.Command{cmd}).Match(context.Background(), "show me the git status")
+			if err != nil {
+				t.Fatalf("a meaningless value is a refusal, not an error: %v", err)
+			}
+
+			// The required argument is unfilled, so nothing runs at all.
+			if res.Matched {
+				t.Fatalf("matched with project = %#v, which is a value invented from nothing", res.Args["project"])
+			}
+			if !reflect.DeepEqual(res.Unfilled, []string{"project"}) {
+				t.Fatalf("Unfilled = %v, want [project]", res.Unfilled)
+			}
+			if _, ok := res.Args["project"]; ok {
+				t.Errorf("Args carries project = %#v", res.Args["project"])
+			}
+		})
+	}
+}
+
+// TestMatchFillerValuesFallBackToDefaults is the other half: an argument that
+// has a default takes it rather than being overwritten with filler.
+func TestMatchFillerValuesFallBackToDefaults(t *testing.T) {
+	cmd := command(t, "x", `instruction "x"
+args {
+    branch: string = "main"
+    port: int = 8000
+    flag: bool = false
+}
+run { print("y") }
+`)
+
+	// Only the string and int slots are given filler. A boolean in the bool
+	// slot would be a value, not filler, which TestMatchBooleanSlotsStillTake
+	// Booleans covers.
+	for _, filler := range []any{"", nil, false, true} {
+		model := &fakeModel{reply: call("x", map[string]any{
+			"branch": filler,
+			"port":   filler,
+		})}
+		res, err := New(model, []commands.Command{cmd}).Match(context.Background(), "go")
+		if err != nil {
+			t.Fatalf("filler %#v: %v", filler, err)
+		}
+		if !res.Matched {
+			t.Fatalf("filler %#v: every argument has a default, so this is runnable", filler)
+		}
+		if got := res.Args["branch"]; got != "main" {
+			t.Errorf("filler %#v: branch = %#v, want the default", filler, got)
+		}
+		if got := res.Args["port"]; got != int64(8000) {
+			t.Errorf("filler %#v: port = %#v, want the default", filler, got)
+		}
+		// Omitted entirely, so it takes its default.
+		if got := res.Args["flag"]; got != false {
+			t.Errorf("filler %#v: flag = %#v, want the default", filler, got)
+		}
+	}
+}
+
+// TestMatchBooleanSlotsStillTakeBooleans guards the boundary of the rule: a
+// boolean in a boolean slot is a value, not filler, so `false` must survive.
+func TestMatchBooleanSlotsStillTakeBooleans(t *testing.T) {
+	cmd := command(t, "x", `instruction "x"
+args {
+    flag: bool
+}
+run { print("y") }
+`)
+	model := &fakeModel{reply: call("x", map[string]any{"flag": false})}
+	res, err := New(model, []commands.Command{cmd}).Match(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Matched {
+		t.Fatalf("false is a legitimate value for a bool slot: %+v", res)
+	}
+	if got := res.Args["flag"]; got != false {
+		t.Errorf("flag = %#v, want false", got)
+	}
+}
+
+// TestMatchNumbersAreStillCoercedToStrings guards the other boundary: a number
+// for a string slot has a real reading, so it is converted rather than treated
+// as filler (D29).
+func TestMatchNumbersAreStillCoercedToStrings(t *testing.T) {
+	cmd := command(t, "x", `instruction "x"
+args {
+    project: string
+}
+run { print("y") }
+`)
+	model := &fakeModel{reply: call("x", map[string]any{"project": 3000})}
+	res, err := New(model, []commands.Command{cmd}).Match(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Matched || res.Args["project"] != "3000" {
+		t.Fatalf("matched = %v, project = %#v; want the number rendered as a string", res.Matched, res.Args["project"])
+	}
+}
+
 // TestMatchWhitespaceIsAValue guards the boundary of the rule: only the empty
 // string means "absent". A deliberate space is a value the author asked for,
 // and trimming it would be Needless editing the user's words.
@@ -570,11 +709,6 @@ run { print("y") }
 		{
 			name:  "a number is not a boolean",
 			args:  map[string]any{"count": 1, "rate": 1.0, "flag": 1, "note": "x"},
-			isErr: true,
-		},
-		{
-			name:  "null is rejected",
-			args:  map[string]any{"count": nil, "rate": 1.0, "flag": true, "note": "x"},
 			isErr: true,
 		},
 		{

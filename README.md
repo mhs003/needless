@@ -33,6 +33,14 @@ Requires a `models/needle3.cact` archive. By default it is looked for in
 `<exe dir>/models/`, `./models/`, then `~/.needless/models/`. Set `weights` in
 the config (below) to point somewhere else.
 
+**Platforms.** v1 ships an engine for **linux-x86_64** only. On anything else `n`
+fails immediately and says which engine directory it looked for. See
+[the platform notes](needle/BINDINGS.md) if you want to add one.
+
+**Speed.** Every invocation loads the 34 MiB model before it can match anything,
+which takes a couple of seconds. That is the price of doing the matching on your
+machine instead of someone else's; there is no background daemon.
+
 ---
 
 ## Writing a command

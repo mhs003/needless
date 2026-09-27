@@ -211,18 +211,14 @@ func resolveArgs(cmd commands.Command, raw json.RawMessage) (map[string]any, []s
 	var unfilled []string
 
 	for _, arg := range cmd.Args() {
-		// An empty string is the absence of a value, not a value, whatever the
-		// argument's declared type (D51). A model with nothing to put in a slot
-		// still has to return a call, so it returns "". Taking that at face
-		// value ran the script with a hole in it — which is exactly how B1
-		// surfaced as "not a git repository: " with an empty $PROJECT.
-		//
-		// This is checked before coercion, not after, because "" is not a
-		// value an int or a bool can be made from: reading it as an error would
-		// make the rule uniform for strings and an exception for everything
-		// else. It is about what a slot means, which is why it lives here and
-		// not in coerce.
-		if value, ok := supplied[arg.Name]; ok && !isEmptyString(value) {
+		// A slot the model filled with something meaningless is treated as
+		// empty, whatever the argument's declared type (D51). It is checked
+		// before coercion rather than after, because a boolean is not a value
+		// a string can be made from without inventing one — reading it as an
+		// error would make the rule uniform for strings and an exception for
+		// everything else. This is about what a slot means, which is why it
+		// lives here and not in coerce.
+		if value, ok := supplied[arg.Name]; ok && !hasNoValue(arg, value) {
 			coerced, err := coerce(arg, value)
 			if err != nil {
 				return nil, nil, fmt.Errorf("intent: command %q: %w", cmd.ID, err)
@@ -231,9 +227,10 @@ func resolveArgs(cmd commands.Command, raw json.RawMessage) (map[string]any, []s
 			continue
 		}
 
-		// Either absent or empty: take the declared default if there is one.
-		// An argument whose author wrote `x: string = ""` has opted into an
-		// empty value and still gets one, because the default is what is used.
+		// Either absent or meaningless: take the declared default if there is
+		// one. An argument whose author wrote `x: string = ""` has opted into
+		// an empty value and still gets one, because the default is what is
+		// used.
 		if arg.Default == nil {
 			unfilled = append(unfilled, arg.Name)
 			continue
@@ -247,13 +244,32 @@ func resolveArgs(cmd commands.Command, raw json.RawMessage) (map[string]any, []s
 	return out, unfilled, nil
 }
 
-// isEmptyString reports whether a raw or coerced value is the empty string,
-// which resolveArgs reads as "no value" rather than as a value (D51). Only the
-// empty string counts: a single space is a value, and trimming it would be
-// Needless editing the user's words.
-func isEmptyString(v any) bool {
-	s, ok := v.(string)
-	return ok && s == ""
+// hasNoValue reports whether what the model supplied means "nothing", as opposed
+// to a value that happens to be wrong.
+//
+// A model with nothing to put in a slot still has to return a call, so it fills
+// the slot with something meaningless. Three shapes mean that, and all three are
+// read as absent rather than as a value (D51):
+//
+//   - the empty string, which is how B1 first surfaced;
+//   - JSON null, which is literally "no value";
+//   - a boolean in a slot that is not a boolean, which stringifies to "false" —
+//     the worst possible outcome, because it looks like a value. That one
+//     reached a shell script as `cd false` and failed on a git status prompt.
+//
+// A number for a string slot is deliberately *not* in this list: "3000" for a
+// port is a real conversion the model may well have meant (D29). Only tokens
+// that carry no information about what the user asked for count.
+func hasNoValue(arg nscript.Arg, raw any) bool {
+	switch v := raw.(type) {
+	case nil:
+		return true
+	case string:
+		return v == ""
+	case bool:
+		return arg.Type != nscript.TypeBool
+	}
+	return false
 }
 
 func undeclared(supplied map[string]any, declared map[string]nscript.Arg) []string {
@@ -273,6 +289,10 @@ func undeclared(supplied map[string]any, declared map[string]nscript.Arg) []stri
 // number or writes one for a string, so the conversions below are deliberately
 // generous where the intent is unambiguous, and refuse where it is not: 1.5
 // for an int is a mistake, not a rounding opportunity.
+//
+// A boolean is never converted to a string: `false` becoming "false" is not a
+// generous reading of anything, it is inventing a value, and resolveArgs filters
+// that case out before reaching here.
 func coerce(arg nscript.Arg, raw any) (any, error) {
 	switch arg.Type {
 	case nscript.TypeString:
@@ -281,8 +301,6 @@ func coerce(arg nscript.Arg, raw any) (any, error) {
 			return v, nil
 		case float64:
 			return formatNumber(v), nil
-		case bool:
-			return strconv.FormatBool(v), nil
 		}
 
 	case nscript.TypeInt:

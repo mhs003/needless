@@ -106,6 +106,39 @@ func TestDefaultEnginePathFindsVendoredEngine(t *testing.T) {
 	}
 }
 
+// TestEngineNotFoundNamesThePlatformDirectory guards the one thing that makes
+// the message useful. Go and upstream spell platforms differently — linux/amd64
+// against linux-x86_64 — so a message that only says "set NEEDLE_ENGINE" leaves
+// the reader to guess the very string that is easy to get wrong.
+func TestEngineNotFoundNamesThePlatformDirectory(t *testing.T) {
+	err := engineNotFound()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+
+	for _, want := range []string{
+		runtime.GOOS,
+		runtime.GOARCH,
+		platformDirs()[0], // the upstream spelling, e.g. linux-x86_64
+		libraryName(),     // e.g. libneedle.so
+		"NEEDLE_ENGINE",
+		"BINDINGS.md",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message does not mention %q:\n%s", want, msg)
+		}
+	}
+
+	// It must be specific, not a restatement of the Go platform: on
+	// linux/amd64 the directory is linux-x86_64 and those differ.
+	if runtime.GOOS == "linux" && runtime.GOARCH == "amd64" {
+		if !strings.Contains(msg, "linux-x86_64") {
+			t.Errorf("message omits the upstream directory name:\n%s", msg)
+		}
+	}
+}
+
 func TestDefaultEnginePathHonoursEnv(t *testing.T) {
 	lib := stubtest.BuildStub(t)
 	t.Setenv("NEEDLE_ENGINE", lib)
