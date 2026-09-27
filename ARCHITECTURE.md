@@ -588,6 +588,16 @@ model.
   documentation, and an example that does not parse is worse than none.
 - **Stub engine** (`needle/internal/stubtest`) for the binding's error paths,
   driven by trigger substrings such as `FAIL_COMPLETE` and `TRUNCATE`.
+- **Fuzz targets** for the two places that read input neither process controls:
+  `FuzzParse` in `internal/nscript` (a `.nsc` file is hand-written by a user, so
+  a panic is a crash on someone's typo) and `FuzzReadFrame` in the worker (a
+  truncated stream is what a child dying mid-frame looks like). Their seed
+  corpora run with the ordinary suite; fuzz them deliberately with
+  `go test -fuzz=FuzzParse -fuzztime=60s ./internal/nscript/` and the same for
+  `FuzzReadFrame`. Beyond not panicking, `FuzzParse` holds that a nil error
+  comes with a usable `Program` and a failure always carries a position, and
+  `FuzzReadFrame` holds that the 1 GiB guard fires from the header alone and
+  that anything decoded survives a round trip.
 
 **2. The real `n` binary** (`cmd/n/main_test.go`) — built with `go test` and
 executed as a process, with a temporary `HOME`. Deterministic and needs no
