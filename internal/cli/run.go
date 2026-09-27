@@ -93,6 +93,14 @@ func (a *app) resolve(ctx context.Context, cfg config.Config, reg *commands.Regi
 }
 
 func (a *app) reportNoMatch(res intent.Result) {
+	// The command was recognised but a required argument had no value. Saying
+	// only "no command matched" would be untrue and would hide the one thing
+	// the user can act on: which value the prompt failed to supply.
+	if len(res.Unfilled) > 0 {
+		fmt.Fprintf(a.stderr, "n: %s needs a value for %s, and the prompt does not provide one\n",
+			res.Command.ID, strings.Join(res.Unfilled, ", "))
+		return
+	}
 	if len(res.Suppressed) > 0 {
 		// The engine withheld a call it was not confident about. Showing it
 		// lets the user see what it nearly did.

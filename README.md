@@ -72,6 +72,12 @@ git status --short
   it in the words a user would use.
 - **`args`** declares the slots the model may fill. A default makes an argument
   optional; `string`, `int`, `float` and `bool` are the types.
+
+  An argument with **no** default must be given a value. If the prompt does not
+  supply one, `n` says which one it could not find and refuses to run, rather
+  than passing an empty value through and letting the script fail somewhere
+  inside. An empty string always counts as "no value"; write `x: string = ""`
+  if you genuinely want an empty one.
 - **`confirm true`** makes `n` ask before running. It defaults to `false`.
 - **`run`** is the implementation, built from `let`, `if`/`else`, `fn`,
   `return`, `print`, `error`, `env` and `exec`.

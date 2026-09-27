@@ -339,13 +339,175 @@ func TestMatchRejectsUndeclaredCommand(t *testing.T) {
 	}
 }
 
-func TestMatchMissingRequiredArgument(t *testing.T) {
+func TestMatchAnOmittedRequiredArgumentIsARefusal(t *testing.T) {
+	// The schema marks project as required, so the grammar should not let the
+	// model omit it. If it happens anyway there is still nothing runnable, and
+	// reporting that as a refusal keeps it the same kind of outcome as an
+	// empty value (D50).
 	model := &fakeModel{reply: call("project/start", map[string]any{})}
 	m := New(model, []commands.Command{deployment(t)})
 
-	_, err := m.Match(context.Background(), "start something")
-	if err == nil || !strings.Contains(err.Error(), `missing required argument "project"`) {
-		t.Fatalf("err = %v", err)
+	res, err := m.Match(context.Background(), "start something")
+	if err != nil {
+		t.Fatalf("an unfillable command is a refusal, not an error: %v", err)
+	}
+	if res.Matched {
+		t.Fatal("a command with no value for a required argument must not match")
+	}
+	if !reflect.DeepEqual(res.Unfilled, []string{"project"}) {
+		t.Fatalf("Unfilled = %v, want [project]", res.Unfilled)
+	}
+	if res.Command.ID != "project/start" {
+		t.Errorf("Command = %q, want the recognised command named", res.Command.ID)
+	}
+	if len(res.Args) != 0 {
+		t.Errorf("Args = %v, want none", res.Args)
+	}
+}
+
+// TestMatchEmptyStringDoesNotSatisfyARequiredArgument is the regression test
+// for B1. The model has nothing to put in `project`, so it returns "", which
+// used to be taken at face value: the command ran, and failed inside its own
+// shell script on an empty $PROJECT — "not a git repository: " with nothing
+// after the colon. It must instead be reported as an unfilled argument.
+func TestMatchEmptyStringDoesNotSatisfyARequiredArgument(t *testing.T) {
+	model := &fakeModel{reply: call("project/start", map[string]any{"project": ""})}
+	m := New(model, []commands.Command{deployment(t)})
+
+	res, err := m.Match(context.Background(), "show me git status")
+	if err != nil {
+		t.Fatalf("an empty value is a refusal, not an error: %v", err)
+	}
+	if res.Matched {
+		t.Fatalf("an empty string satisfied a required argument: args = %#v", res.Args)
+	}
+	if !reflect.DeepEqual(res.Unfilled, []string{"project"}) {
+		t.Fatalf("Unfilled = %v, want [project]", res.Unfilled)
+	}
+	// Nothing may reach the runtime with a hole where a required value goes.
+	if _, ok := res.Args["project"]; ok {
+		t.Errorf("Args carries project = %#v, want no value at all", res.Args["project"])
+	}
+}
+
+// TestMatchEmptyStringFallsBackToTheDefault pins the second half of D51: an
+// empty value is read as "not supplied", so an argument that has a default
+// takes it rather than being overridden with an empty string. The rule is
+// uniform across types, which is why the int and bool are here too: "" cannot
+// be coerced to either, so reading it as an error would make the rule an
+// exception for everything that is not a string.
+func TestMatchEmptyStringFallsBackToTheDefault(t *testing.T) {
+	cmd := command(t, "x", `instruction "x"
+args {
+    branch: string = "main"
+    note: string = ""
+    port: int = 8000
+    flag: bool = true
+}
+run { print("y") }
+`)
+	model := &fakeModel{reply: call("x", map[string]any{
+		"branch": "", "note": "", "port": "", "flag": "",
+	})}
+	m := New(model, []commands.Command{cmd})
+
+	res, err := m.Match(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Matched {
+		t.Fatalf("every argument has a default, so this is runnable: %+v", res)
+	}
+	if got := res.Args["branch"]; got != "main" {
+		t.Errorf("branch = %#v, want the default %q rather than an empty override", got, "main")
+	}
+	if got := res.Args["port"]; got != int64(8000) {
+		t.Errorf("port = %#v, want the default 8000", got)
+	}
+	if got := res.Args["flag"]; got != true {
+		t.Errorf("flag = %#v, want the default true", got)
+	}
+	// An explicit `= ""` is the author opting into an empty value, and it
+	// still arrives as one.
+	if got := res.Args["note"]; got != "" {
+		t.Errorf("note = %#v, want %q", got, "")
+	}
+	if len(res.Unfilled) != 0 {
+		t.Errorf("Unfilled = %v, want none", res.Unfilled)
+	}
+}
+
+// TestMatchEmptyStringLeavesARequiredNonStringUnfilled covers the other side of
+// the same rule: with no default to fall back on, "" is an unfilled argument
+// rather than a coercion error.
+func TestMatchEmptyStringLeavesARequiredNonStringUnfilled(t *testing.T) {
+	cmd := command(t, "x", `instruction "x"
+args {
+    port: int
+    flag: bool
+}
+run { print("y") }
+`)
+	model := &fakeModel{reply: call("x", map[string]any{"port": "", "flag": ""})}
+	m := New(model, []commands.Command{cmd})
+
+	res, err := m.Match(context.Background(), "go")
+	if err != nil {
+		t.Fatalf("an empty value is a refusal, not a coercion error: %v", err)
+	}
+	if res.Matched {
+		t.Fatalf("expected no match, got args %#v", res.Args)
+	}
+	if want := []string{"port", "flag"}; !reflect.DeepEqual(res.Unfilled, want) {
+		t.Fatalf("Unfilled = %v, want %v", res.Unfilled, want)
+	}
+}
+
+// TestMatchWhitespaceIsAValue guards the boundary of the rule: only the empty
+// string means "absent". A deliberate space is a value the author asked for,
+// and trimming it would be Needless editing the user's words.
+func TestMatchWhitespaceIsAValue(t *testing.T) {
+	cmd := command(t, "x", `instruction "x"
+args {
+    marker: string
+}
+run { print("y") }
+`)
+	model := &fakeModel{reply: call("x", map[string]any{"marker": " "})}
+	m := New(model, []commands.Command{cmd})
+
+	res, err := m.Match(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Matched {
+		t.Fatalf("a space is a value: %+v", res)
+	}
+	if got := res.Args["marker"]; got != " " {
+		t.Errorf("marker = %#v, want a single space", got)
+	}
+}
+
+// TestMatchUnfilledArgumentsAreInDeclarationOrder keeps the reported names
+// stable, so the message the user sees does not shuffle between runs.
+func TestMatchUnfilledArgumentsAreInDeclarationOrder(t *testing.T) {
+	cmd := command(t, "x", `instruction "x"
+args {
+    zebra: string
+    alpha: string
+    middle: string = "given"
+}
+run { print("y") }
+`)
+	model := &fakeModel{reply: call("x", map[string]any{"zebra": "", "alpha": ""})}
+	m := New(model, []commands.Command{cmd})
+
+	res, err := m.Match(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"zebra", "alpha"}; !reflect.DeepEqual(res.Unfilled, want) {
+		t.Fatalf("Unfilled = %v, want %v", res.Unfilled, want)
 	}
 }
 

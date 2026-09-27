@@ -53,7 +53,9 @@ func (m *Matcher) SetMaxNewTokens(n int) {
 
 // Result is the outcome of one matching turn.
 type Result struct {
-	// Command is the selected command. Only meaningful when Matched is true.
+	// Command is the selected command. It is meaningful when Matched is true,
+	// and also when Unfilled is non-empty: the command that was recognised but
+	// could not be filled.
 	Command commands.Command
 
 	// Matched reports whether a command was selected. False means the model
@@ -64,6 +66,16 @@ type Result struct {
 	// Args holds the resolved argument values, keyed by argument name.
 	// Defaults are applied; every declared argument is present exactly once.
 	Args map[string]any
+
+	// Unfilled names the required arguments the model gave no value for, in
+	// declaration order. When it is non-empty, Matched is false: the command
+	// was recognised, but the prompt does not carry enough to run it.
+	//
+	// This is a refusal rather than an error (D50). The model did nothing
+	// wrong and neither did the user, so returning an error would report a
+	// perfectly ordinary outcome as a malfunction. The caller reports which
+	// argument was missing and may fall back.
+	Unfilled []string
 
 	// Confidence is the model's calibrated score, or nil when the weights
 	// carry no calibration head.
@@ -116,9 +128,17 @@ func (m *Matcher) Match(ctx context.Context, prompt string) (Result, error) {
 		return Result{}, fmt.Errorf("intent: model chose %q, which is not a declared command", call.Name)
 	}
 
-	args, err := resolveArgs(cmd, call.Arguments)
+	args, unfilled, err := resolveArgs(cmd, call.Arguments)
 	if err != nil {
 		return Result{}, err
+	}
+	if len(unfilled) > 0 {
+		// The command was recognised, but a required argument has no value,
+		// so there is nothing runnable. That is a refusal, not a failure
+		// (D50, and the fix for B1).
+		res.Command = cmd
+		res.Unfilled = unfilled
+		return res, nil
 	}
 
 	res.Command = cmd
@@ -161,11 +181,16 @@ func DefaultArgs(cmd commands.Command) (map[string]any, error) {
 // resolveArgs validates the model's arguments against the command's
 // declaration. Every declared argument ends up present: supplied values are
 // coerced, and omitted ones take their default.
-func resolveArgs(cmd commands.Command, raw json.RawMessage) (map[string]any, error) {
+//
+// The returned names are required arguments the model left without a value.
+// They make the command unrunnable, which the caller reports as a refusal
+// rather than an error. The error return is reserved for a reply that is
+// malformed or contradicts the declaration — a different kind of problem.
+func resolveArgs(cmd commands.Command, raw json.RawMessage) (map[string]any, []string, error) {
 	supplied := map[string]any{}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &supplied); err != nil {
-			return nil, fmt.Errorf("intent: command %q: read arguments: %w", cmd.ID, err)
+			return nil, nil, fmt.Errorf("intent: command %q: read arguments: %w", cmd.ID, err)
 		}
 	}
 
@@ -178,31 +203,57 @@ func resolveArgs(cmd commands.Command, raw json.RawMessage) (map[string]any, err
 	// would silently drop part of what the model understood. The grammar
 	// should make this impossible; if it happens, it is worth knowing (D28).
 	if extra := undeclared(supplied, declared); len(extra) > 0 {
-		return nil, fmt.Errorf("intent: command %q: model supplied undeclared argument(s) %s",
+		return nil, nil, fmt.Errorf("intent: command %q: model supplied undeclared argument(s) %s",
 			cmd.ID, strings.Join(extra, ", "))
 	}
 
 	out := make(map[string]any, len(cmd.Args()))
+	var unfilled []string
+
 	for _, arg := range cmd.Args() {
-		value, ok := supplied[arg.Name]
-		if !ok {
-			if arg.Default == nil {
-				return nil, fmt.Errorf("intent: command %q: missing required argument %q", cmd.ID, arg.Name)
+		// An empty string is the absence of a value, not a value, whatever the
+		// argument's declared type (D51). A model with nothing to put in a slot
+		// still has to return a call, so it returns "". Taking that at face
+		// value ran the script with a hole in it — which is exactly how B1
+		// surfaced as "not a git repository: " with an empty $PROJECT.
+		//
+		// This is checked before coercion, not after, because "" is not a
+		// value an int or a bool can be made from: reading it as an error would
+		// make the rule uniform for strings and an exception for everything
+		// else. It is about what a slot means, which is why it lives here and
+		// not in coerce.
+		if value, ok := supplied[arg.Name]; ok && !isEmptyString(value) {
+			coerced, err := coerce(arg, value)
+			if err != nil {
+				return nil, nil, fmt.Errorf("intent: command %q: %w", cmd.ID, err)
 			}
-			def, ok := literalValue(arg.Default)
-			if !ok {
-				return nil, fmt.Errorf("intent: command %q: bad default for %q", cmd.ID, arg.Name)
-			}
-			out[arg.Name] = def
+			out[arg.Name] = coerced
 			continue
 		}
-		coerced, err := coerce(arg, value)
-		if err != nil {
-			return nil, fmt.Errorf("intent: command %q: %w", cmd.ID, err)
+
+		// Either absent or empty: take the declared default if there is one.
+		// An argument whose author wrote `x: string = ""` has opted into an
+		// empty value and still gets one, because the default is what is used.
+		if arg.Default == nil {
+			unfilled = append(unfilled, arg.Name)
+			continue
 		}
-		out[arg.Name] = coerced
+		def, ok := literalValue(arg.Default)
+		if !ok {
+			return nil, nil, fmt.Errorf("intent: command %q: bad default for %q", cmd.ID, arg.Name)
+		}
+		out[arg.Name] = def
 	}
-	return out, nil
+	return out, unfilled, nil
+}
+
+// isEmptyString reports whether a raw or coerced value is the empty string,
+// which resolveArgs reads as "no value" rather than as a value (D51). Only the
+// empty string counts: a single space is a value, and trimming it would be
+// Needless editing the user's words.
+func isEmptyString(v any) bool {
+	s, ok := v.(string)
+	return ok && s == ""
 }
 
 func undeclared(supplied map[string]any, declared map[string]nscript.Arg) []string {

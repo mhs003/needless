@@ -42,116 +42,12 @@ actually runs (CLI spec §9, AGENTS.md §2).
 
 Read this section before touching anything near it. Each entry records the
 symptom, the cause, the decision that has to be made, and where to change the
-code. None of these are fixed yet; they are recorded rather than guessed at.
+code.
 
-### B1 — A required string argument can be satisfied by an empty string
-
-**Severity:** high. It turns "I could not tell what you meant" into a confusing
-failure from inside a shell script.
-
-**Observed:**
-
-```
-$ n show me git status
-not a git repository:
-n: git/status: 21:5: bash exited with status 1
-```
-
-**What happened.** The prompt names no project. The model still has to return a
-call, so it filled `project` with the empty string. `intent` accepted that as a
-supplied value, ran the script, and the script's own guard
-(`[ ! -d "$PROJECT/.git" ]`) fired against an empty `$PROJECT`. The user is left
-reading a shell-level failure and exit 1 instead of being told which argument
-was missing.
-
-**Cause, step by step:**
-
-1. `internal/intent/coerce` accepts `""` for a `string` argument. It is a valid
-   Go string, so there is nothing there to reject, and that is arguably right in
-   general.
-2. `internal/intent/resolveArgs` treats *presence* as *satisfaction*. It errors
-   only when an argument is absent (`missing required argument %q`), never when
-   it is present but empty.
-3. So an argument declared without a default — the syntax that means "this
-   script cannot run without a value" — can still silently become `""`.
-
-**Why it matters.** Declaring an argument without a default is the script
-author's way of saying the command is meaningless without it. The empty string
-is exactly the case where the model had no evidence to offer, and it is exactly
-the case that should fall through to the no-match path (and thence to the
-fallback) rather than execute. This is the same class of failure as D28 and D29:
-a value that cannot be used is worse than a clear failure.
-
-**Decision required before fixing.** Is an empty string ever a meaningful value
-for a *required* argument? The recommendation is **no**, with the corollary that
-an argument whose author explicitly wrote `x: string = ""` has opted into an
-empty value and must keep working. Settle this first; it determines the shape of
-the fix.
-
-**Fix sketch (not applied):**
-
-- In `internal/intent/match.go`, in `resolveArgs` — not in `coerce` — after a
-  value has been coerced, if the argument has **no default** and the coerced
-  value is the empty string, return the existing missing-argument error so the
-  caller reports a refusal and takes the fallback path.
-- Leave `coerce` alone. Accepting `""` is correct in isolation; the rule is
-  about what a required slot means, which is `resolveArgs`' job.
-- Decide and document what happens when an argument has a non-empty default and
-  the model explicitly supplies `""`. Treating it as "absent" (and so falling
-  back to the default) is consistent; treating it as an explicit empty is also
-  defensible. Pick one and write it into the decisions table.
-- Tests to add, in `internal/intent/match_test.go`:
-  - a call supplying `{"project": ""}` for a required string must error and must
-    not run;
-  - `x: string = ""` must still accept an empty supplied value;
-  - an omitted optional string must still take its default.
-- Optionally, `internal/commands/examples_test.go` can assert that no shipped
-  example declares a required `string` it cannot sensibly receive.
-
-**Do not "fix" this by giving the example a default.** Changing
-`examples/commands/git/status.nsc` to `project: string = "."` is a reasonable
-change to the example on its own merits — running `git status` in the current
-directory is the common case — but it does not fix B1, it only hides one
-instance of it. Fix the general rule or say explicitly that you chose not to.
-
-### B2 — Observed, not reproduced: the same prompt matching differently
-
-**Severity:** unknown. Recorded because it was seen, and because it was seen
-only once it is not yet a bug report so much as a question.
-
-**Observed.** While exercising the CLI with the shipped examples, the prompt
-`start the server for /home/void/needless on port 3000` resolved to
-`system/cleanup` on one run and to `project/start` on others; on two runs it
-appeared to match nothing at all. The same prompt then resolved to
-`project/start` on eight consecutive runs, and `show the git status of …`
-resolved to `git/status` on eight of eight. The one-off behaviour predates the
-`readResponse` and pipe fixes described under "Fixed this session", so it may
-simply have been a misreading of interleaved output from a failing run.
-
-**Why it is plausible anyway.** Matching is a decode, and the tool list, the
-`system` facts and the prompt all feed it. `systemFact` generates a `date:` fact
-that includes the current minute, so the prefix is not byte-identical between
-runs; that is a real source of variation, however small. With five or fewer
-commands the retrieval head renders the whole toolset, so retrieval is not the
-suspect here.
-
-**What to do next, in order:**
-
-1. Reproduce deliberately: run one prompt fifty times against a fixed command
-   set and tally the chosen command. Do not change any code first.
-2. If it is stable, close this entry with a note saying so. That is a perfectly
-   good outcome and cheaper than an investigation.
-3. If it is not, control for the variable that is known to change: pin
-   `system` in the config to a fixed string and repeat. If the variance
-   disappears, the `date:` fact is the cause and the question becomes whether
-   the fact is worth its cost.
-4. Only then treat it as a matching-quality problem, which would make it a
-   model-behaviour question rather than a Needless bug.
-
-**Do not** paper over this by loosening argument validation or by special-casing
-the examples. Whatever the answer, the plumbing behaved correctly in every run:
-the CLI executed exactly the command the model returned, and enforced the
-confirmation policy of that command.
+**None open.** B1 and B2, the only two defects ever recorded here, were both
+resolved in the session described under "Fixed this session" below. Their full
+entries are kept rather than deleted, because a closed bug is still the best
+explanation of why the code looks the way it does.
 
 ---
 
@@ -167,6 +63,102 @@ Recorded so that they are not re-broken, and so that the reasoning survives.
 | `exec` ignored its context | Cancelling a request left the embedded script running. | `exec.Command` replaced with `exec.CommandContext`, and the run loop now checks the context between statements so a script with no `exec` is still interruptible. |
 | `parseIf` swallowed the newline after `}` | Any `if` followed by another statement failed to parse. | The `else` lookahead now restores the parser position when there is no `else`. |
 | `--edit-command` printed no path without `$EDITOR` | The user was told to set `$EDITOR` but not told which file. | The path is printed before the hint. |
+
+### B1 — A required string argument was satisfied by an empty string (fixed)
+
+**Symptoms.** On the real model:
+
+```
+$ n show me git status
+not a git repository:
+n: git/status: 21:5: bash exited with status 1
+```
+
+The prompt names no project. The model still has to return a call, so it filled
+`project` with `""`. `coerce` accepted it — an empty string is a valid string —
+and `resolveArgs` treated *presence* as *satisfaction*, erroring only when an
+argument was absent. So an argument declared without a default, the syntax that
+means "this command cannot run without a value", silently became `""` and the
+script failed on its own guard with nothing after the colon. The user was left
+reading a shell-level failure instead of being told which value was missing.
+
+**The decision, and what was chosen.** Is an empty string ever a meaningful
+value for a required argument? **No** (D51). An empty string is treated as the
+*absence* of a value, uniformly:
+
+- required argument (no default) + `""` → the argument is unfilled → refusal;
+- any argument with a default + `""` → the default is used, not overridden;
+- `x: string = ""` → still arrives as `""`, because the default is what is used.
+  This is the author's opt-in, and it is the escape hatch if an empty value is
+  ever genuinely wanted for a slot that must be supplied.
+
+The rule lives in `internal/intent/resolveArgs`, **not** in `coerce`. Accepting
+`""` in isolation is correct; what a *required slot* means is `resolveArgs`'
+job. It is checked *before* coercion rather than after, because `""` cannot be
+made into an `int` or a `bool` at all: checking afterwards would have made the
+rule uniform for strings and a special case for every other type. Only the
+empty string counts — a single space is a value, and trimming it would be
+Needless editing the user's words (`TestMatchWhitespaceIsAValue`).
+
+**Second decision.** An unfilled required argument is a **refusal, not an
+error** (D50). The model did nothing wrong and neither did the user; returning
+an error reported an ordinary outcome as a malfunction. `Result` carries
+`Unfilled` (declaration order, so the message is stable), `Matched` is false,
+and `Command` is set so the caller can name it. The CLI reports exactly what
+happened — `git/status needs a value for project, and the prompt does not
+provide one` — and then takes the existing no-match path, so a configured
+fallback still runs. That last part is a judgement call: the prompt *did* match
+a command, so strictly the fallback's condition ("does not match any command")
+is not met. It was chosen because the user's request could not be carried out
+and the fallback is the "I could not do that" handler; the precise stderr line
+means it is never silent. Revisit if the fallback turns out to fire too readily.
+
+Malformed replies — an undeclared argument, a value that cannot be coerced, a
+name outside the declared set — stay hard errors. Those indicate a bug or a
+toolset mismatch, not an incomplete prompt.
+
+**Not done, deliberately.** `examples/commands/git/status.nsc` still declares
+`project: string` with no default. Giving it `= "."` matches how `git status`
+behaves in a shell, and is defensible on its own merits, but it would also make
+the command silently report on the *current* directory when the user meant
+another repository — and it would hide the one shipped example that exercises
+the required-argument path. Left as it is, `n show me git status` now says
+plainly what is missing. Change it if the trade-off is worth it; it is one line.
+
+**Tests.** `TestMatchEmptyStringDoesNotSatisfyARequiredArgument` (the regression
+test), `TestMatchEmptyStringFallsBackToTheDefault`, `TestMatchWhitespaceIsAValue`,
+`TestMatchUnfilledArgumentsAreInDeclarationOrder`,
+`TestMatchAnOmittedRequiredArgumentIsARefusal`, and on the CLI side
+`TestMainPromptReportsAnUnfilledArgument` and
+`TestMainPromptUnfilledArgumentUsesTheFallback`.
+
+### B2 — The same prompt matching differently (not reproducible, closed)
+
+**Observed once.** The prompt `start the server for /home/void/needless on port
+3000` appeared to resolve to `system/cleanup` on one run and to `project/start`
+on others; on two runs it appeared to match nothing. It predated the
+`readResponse` and pipe fixes, so a misreading of interleaved output from a run
+that was failing for those reasons was always the likely explanation.
+
+**Followed up as planned, and it did not reproduce.** 80 runs over four prompts
+against the shipped examples, under the real model:
+
+| Prompt | Runs | Outcomes |
+|---|---|---|
+| `show the git status of /home/void/needless` | 20 | 20 × `git/status` |
+| `start the server for /home/void/needless on port 3000` | 20 | 20 × `project/start` |
+| `clean up the project at /home/void/needless` | 20 | 20 × `system/cleanup` |
+| `show me git status` (unfillable) | 6 | 6 × the same unfilled-argument refusal |
+
+Matching is stable, including on a genuinely ambiguous prompt and on one that
+cannot be filled. The `date:` fact in `systemFact` does vary between runs (it
+carries the current minute), but there is no evidence it perturbs the result,
+so the planned control for it was not needed.
+
+**Reopen this if** a prompt is ever seen to resolve inconsistently again. The
+first thing to do is repeat the tally above; the second is to pin `system` in
+the config and repeat, which isolates the only variable known to differ between
+runs.
 
 ---
 
@@ -334,6 +326,8 @@ Each entry records *why*, so it is not re-litigated.
 | D47 | Needless' own messages go to stderr; stdout carries only the command's output. | Keeps `n <prompt> | ...` clean. A confirmation prompt is interaction, not output. |
 | D48 | The confirmation never echoes argument values. | A script may declare a password (NSCRIPT spec §14). The command id and the first line of the instruction are enough to decide. |
 | D49 | `internal/cli` takes its streams and a model factory as inputs, and `Main` never calls `os.Exit`. | The whole CLI, including the prompt, confirmation and fallback paths, is then testable without a process or the model. |
+| D50 | A required argument with no usable value is a **refusal**, not an error: `Result.Unfilled` is set, `Matched` is false, and `Command` names the command that could not be filled. | The model did nothing wrong and neither did the user — the prompt simply does not carry enough. Returning an error reported an ordinary outcome as a malfunction, and an error does not reach the fallback, which is precisely the "I could not do that" handler. Malformed replies (undeclared argument, uncoercible value, name outside the declared set) stay errors, because those signal a bug rather than an incomplete prompt. See B1. |
+| D51 | The empty string is the *absence* of a value, uniformly: a required argument given `""` is unfilled; an argument with a default given `""` takes the default; `x: string = ""` still arrives as `""`. | A model with nothing to put in a slot still has to return a call, so it returns `""`. Reading that as a value ran scripts with a hole in them, which is how B1 surfaced. One rule with no exceptions is easier to hold than "empty means absent, except when…". Only the empty string counts — a single space is a value, and trimming it would be Needless editing the user's words. The rule lives in `resolveArgs`, not `coerce`, because it is about what a *required slot* means. |
 
 ---
 
@@ -475,7 +469,22 @@ Full list and detail: `needle/BINDINGS.md`.
 | Context cancelled mid-`exec` | The child is killed and the error says so (D40). |
 | Child stdout / stderr | Streamed live to `Out` / `Err` (D41). |
 | `Executor.Dir` | Sets the child's working directory. |
-| A missing argument value in `args` | Error: the matcher always supplies defaults, so this is a caller bug, not a user one. |
+| A missing argument value in `args` | Error: the matcher never reports a match unless every declared argument has a value, so this is a caller bug, not a user one. |
+
+### Intent (`internal/intent`)
+
+| Case | Behaviour |
+|---|---|
+| Required `string` given `""` | Refused: `Unfilled` names it, `Matched` is false, and the run block never executes (D50, D51). |
+| Required `string` omitted entirely | Same refusal. The schema marks it required, so the grammar should not allow this, but if it happens the outcome is identical. |
+| `string` with a default given `""` | The default is used, not overridden (D51). |
+| `x: string = ""` given `""` | `""`, because the default is what is used. This is the author opting in. |
+| `string` given `" "` (a space) | A value; it is passed through untouched (D51). |
+| Required `string` given a number | Coerced and rendered (`3000` → `"3000"`); this is not the empty case. |
+| `int` given `""` | Read as absent, exactly like a string: the default if there is one, otherwise the argument is unfilled. The rule is checked before coercion precisely so it does not become a string-only exception (D51). |
+| `bool` / `float` given `""` | Same as `int`. |
+| Several arguments unfilled | All are named, in declaration order, so the message is stable across runs. |
+| `Unfilled` non-empty | `Args` holds no partial set — the caller either runs with every value or does not run at all. |
 
 ### CLI (`internal/cli`, `cmd/n`)
 
@@ -491,6 +500,10 @@ Full list and detail: `needle/BINDINGS.md`.
 | Model matches a command | The command runs; stdout is the command's output only (D47). |
 | Model refuses | Exit 1, with the model's reasoning on stderr. |
 | Model withholds a low-confidence call | Reported as withheld; nothing runs. |
+| Command recognised but a required argument is empty | Reported as `needs a value for <arg>`, named on stderr; the run block does not execute (D50, D51). |
+| Command recognised but a required argument is omitted | Same: refused and named, not an error (D50). |
+| Any of the above, no fallback configured | Exit 1. |
+| Any of the above, fallback configured | The reason goes to stderr, then the fallback runs (D50). |
 | Refusal with a fallback configured | The fallback runs with its declared defaults (D42). |
 | Fallback configured but not a known command | Exit 1, naming it. |
 | Fallback needs an argument it has no default for | Exit 1, explaining why it cannot be used as a fallback (D42). |

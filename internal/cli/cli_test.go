@@ -529,6 +529,78 @@ func TestMainPromptRefusalWithNoFallback(t *testing.T) {
 	}
 }
 
+// TestMainPromptReportsAnUnfilledArgument is the CLI half of the B1 fix. A
+// command that was recognised but had no value for a required argument must be
+// named as such, and must not run with a hole where the value goes.
+func TestMainPromptReportsAnUnfilledArgument(t *testing.T) {
+	home := setupHome(t)
+	writeCommand(t, home, "start", `instruction """
+Start the development server for a project.
+"""
+args {
+    project: string
+}
+run {
+    print("STARTED " + project)
+}
+`)
+
+	m := &fakeModel{reply: matchedReply("start", map[string]any{"project": ""})}
+	code, out, errOut := run(t, m, "", "start the server")
+
+	if code != ExitFailure {
+		t.Fatalf("exit = %d, want %d", code, ExitFailure)
+	}
+	if out != "" {
+		t.Fatalf("the run block must not execute with an empty required argument: stdout = %q", out)
+	}
+	if !strings.Contains(errOut, "start needs a value for project") {
+		t.Errorf("stderr = %q, want it to name the missing value", errOut)
+	}
+	if strings.Contains(errOut, "no command matched") {
+		t.Errorf("stderr = %q, but the command was matched — it was only unfillable", errOut)
+	}
+}
+
+func TestMainPromptUnfilledArgumentUsesTheFallback(t *testing.T) {
+	home := setupHome(t)
+	writeCommand(t, home, "start", `instruction """
+Start the development server for a project.
+"""
+args {
+    project: string
+}
+run {
+    print("STARTED " + project)
+}
+`)
+	writeCommand(t, home, "default", `instruction """
+Handle a request nothing else could.
+"""
+args {
+    note: string = "nothing"
+}
+run { print("fallback: " + note) }
+`)
+	writeConfig(t, home, `{"fallback": "default"}`)
+
+	m := &fakeModel{reply: matchedReply("start", map[string]any{"project": ""})}
+	code, out, errOut := run(t, m, "", "start the server")
+
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, errOut)
+	}
+	if !strings.Contains(out, "fallback: nothing") {
+		t.Fatalf("stdout = %q, want the fallback to have run", out)
+	}
+	if strings.Contains(out, "STARTED") {
+		t.Errorf("the unfillable command ran anyway: stdout = %q", out)
+	}
+	if !strings.Contains(errOut, "needs a value for project") {
+		t.Errorf("stderr = %q, want the reason on stderr even though it fell back", errOut)
+	}
+}
+
 func TestMainPromptUsesTheFallback(t *testing.T) {
 	home := setupHome(t)
 	writeCommand(t, home, "list", listCmd)
