@@ -155,6 +155,11 @@ func TestParseArgs(t *testing.T) {
 		{name: "new with id", args: []string{"--new", "git/status"}, want: options{mode: modeNew, operand: "git/status"}},
 		{name: "edit without id", args: []string{"-e"}, want: options{mode: modeEdit}},
 		{name: "edit with id", args: []string{"--edit", "git/status"}, want: options{mode: modeEdit, operand: "git/status"}},
+		{name: "remove without id", args: []string{"--remove"}, want: options{mode: modeRemove}},
+		{name: "remove with id", args: []string{"--remove", "git/status"}, want: options{mode: modeRemove, operand: "git/status"}},
+		{name: "show without id", args: []string{"--show-command"}, want: options{mode: modeShow}},
+		{name: "show with id", args: []string{"--show-command", "a/b"}, want: options{mode: modeShow, operand: "a/b"}},
+		{name: "show alias", args: []string{"--show", "a/b"}, want: options{mode: modeShow, operand: "a/b"}},
 
 		{name: "bare prompt", args: []string{"run", "the", "project"}, want: options{prompt: "run the project"}},
 		{name: "quoted prompt", args: []string{"run the project"}, want: options{prompt: "run the project"}},
@@ -166,6 +171,8 @@ func TestParseArgs(t *testing.T) {
 		{name: "unknown short", args: []string{"-z"}, wantErr: true},
 		{name: "extra after help", args: []string{"--help", "now"}, wantErr: true},
 		{name: "extra after list", args: []string{"--list-commands", "now"}, wantErr: true},
+		{name: "extra after remove", args: []string{"--remove", "a", "b"}, wantErr: true},
+		{name: "extra after show", args: []string{"--show-command", "a", "b"}, wantErr: true},
 	}
 
 	for _, tc := range cases {
@@ -450,6 +457,209 @@ func TestMainEditWithNoCommands(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "no commands to edit") {
 		t.Errorf("stderr = %q", errOut)
+	}
+}
+
+// --- show ----------------------------------------------------------------
+
+func TestMainShowCommandPrintsTheSource(t *testing.T) {
+	home := setupHome(t)
+	src := listCmd
+	path := writeCommand(t, home, "list", src)
+
+	code, out, errOut := run(t, nil, "", "--show-command", "list")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, errOut)
+	}
+	// The source is the requested output, so it is on stdout, byte for byte.
+	if out != src {
+		t.Fatalf("stdout = %q, want the file contents verbatim", out)
+	}
+	// The path is a diagnostic, so it is on stderr and does not pollute a pipe.
+	if !strings.Contains(errOut, path) {
+		t.Errorf("stderr = %q, want the file path", errOut)
+	}
+}
+
+func TestMainShowCommandAcceptsTheExtension(t *testing.T) {
+	home := setupHome(t)
+	writeCommand(t, home, "list", listCmd)
+
+	code, out, _ := run(t, nil, "", "--show", "list.nsc")
+	if code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if out != listCmd {
+		t.Errorf("stdout = %q", out)
+	}
+}
+
+func TestMainShowCommandUnknown(t *testing.T) {
+	home := setupHome(t)
+	writeCommand(t, home, "list", listCmd)
+
+	code, out, errOut := run(t, nil, "", "--show-command", "ghost")
+	if code != ExitFailure {
+		t.Fatalf("exit = %d, want %d", code, ExitFailure)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+	if !strings.Contains(errOut, "no command named") {
+		t.Errorf("stderr = %q", errOut)
+	}
+}
+
+func TestMainShowCommandSelectsInteractively(t *testing.T) {
+	home := setupHome(t)
+	writeCommand(t, home, "alpha", listCmd)
+	writeCommand(t, home, "beta", `instruction "beta one"
+run { print("beta") }
+`)
+
+	code, out, errOut := run(t, nil, "2\n", "--show-command")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, errOut)
+	}
+	if !strings.Contains(out, `instruction "beta one"`) {
+		t.Errorf("stdout = %q, want the second command's source", out)
+	}
+	if !strings.Contains(errOut, "beta.nsc") {
+		t.Errorf("stderr = %q, want the path", errOut)
+	}
+}
+
+// --- remove --------------------------------------------------------------
+
+func TestMainRemoveCommand(t *testing.T) {
+	home := setupHome(t)
+	path := writeCommand(t, home, "list", listCmd)
+
+	code, out, errOut := run(t, nil, "y\n", "--remove", "list")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, errOut)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the file still exists: %v", err)
+	}
+	if !strings.Contains(errOut, "Remove this command?") {
+		t.Errorf("stderr = %q, want it to have asked first", errOut)
+	}
+	if !strings.Contains(errOut, "Removed list") {
+		t.Errorf("stderr = %q", errOut)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+}
+
+func TestMainRemoveDeclinedKeepsTheFile(t *testing.T) {
+	home := setupHome(t)
+	path := writeCommand(t, home, "list", listCmd)
+
+	// An empty answer and EOF (no terminal) must both decline.
+	for _, answer := range []string{"\n", "", "n\n", "maybe\n"} {
+		code, _, errOut := run(t, nil, answer, "--remove", "list")
+		if code != ExitFailure {
+			t.Errorf("answer %q: exit = %d, want %d", answer, code, ExitFailure)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("answer %q: the file was removed: %v", answer, err)
+		}
+		if !strings.Contains(errOut, "was not removed") {
+			t.Errorf("answer %q: stderr = %q", answer, errOut)
+		}
+	}
+}
+
+func TestMainRemoveUnknownCommand(t *testing.T) {
+	home := setupHome(t)
+	writeCommand(t, home, "list", listCmd)
+
+	code, _, errOut := run(t, nil, "y\n", "--remove", "ghost")
+	if code != ExitFailure {
+		t.Fatalf("exit = %d, want %d", code, ExitFailure)
+	}
+	if !strings.Contains(errOut, "no command named") {
+		t.Errorf("stderr = %q", errOut)
+	}
+}
+
+func TestMainRemoveSelectsInteractively(t *testing.T) {
+	home := setupHome(t)
+	alpha := writeCommand(t, home, "alpha", listCmd)
+	beta := writeCommand(t, home, "beta", listCmd)
+
+	code, _, errOut := run(t, nil, "1\ny\n", "--remove")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, errOut)
+	}
+	if _, err := os.Stat(alpha); !os.IsNotExist(err) {
+		t.Errorf("alpha should be gone: %v", err)
+	}
+	if _, err := os.Stat(beta); err != nil {
+		t.Errorf("beta should still exist: %v", err)
+	}
+}
+
+func TestMainRemoveWithNoCommands(t *testing.T) {
+	setupHome(t)
+	code, _, errOut := run(t, nil, "", "--remove")
+	if code != ExitFailure {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(errOut, "no commands to remove") {
+		t.Errorf("stderr = %q", errOut)
+	}
+}
+
+func TestMainRemoveBadChoice(t *testing.T) {
+	home := setupHome(t)
+	path := writeCommand(t, home, "alpha", listCmd)
+
+	code, _, _ := run(t, nil, "9\n", "--remove")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d", code, ExitUsage)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("a bad choice must not remove anything: %v", err)
+	}
+}
+
+// TestWithinRoots pins the check that guards deletion. Discovery only ever
+// yields paths under a root, so this is defence against a future change or an
+// odd configuration — which is exactly why it is tested directly rather than
+// through the CLI.
+func TestWithinRoots(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "home", "u", ".needless", "commands")
+	other := filepath.Join(string(filepath.Separator), "home", "u", "elsewhere")
+
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "a command directly under the root", path: filepath.Join(root, "list.nsc"), want: true},
+		{name: "a command in a subdirectory", path: filepath.Join(root, "git", "status.nsc"), want: true},
+		{name: "the root itself", path: root, want: false},
+		{name: "a parent of the root", path: filepath.Dir(root), want: false},
+		{name: "outside every root", path: filepath.Join(other, "list.nsc"), want: false},
+		{name: "a sibling sharing a prefix", path: root + "-backup/x.nsc", want: false},
+		{name: "an unnormalised path inside", path: filepath.Join(root, "a", "..", "b.nsc"), want: true},
+		{name: "an unnormalised path escaping", path: filepath.Join(root, "..", "outside.nsc"), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := withinRoots(tc.path, []string{root}); got != tc.want {
+				t.Errorf("withinRoots(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+
+	// A path under the second root is still inside the roots.
+	second := filepath.Join(string(filepath.Separator), "opt", "shared")
+	if !withinRoots(filepath.Join(second, "x.nsc"), []string{root, second}) {
+		t.Error("a path under any configured root should be allowed")
 	}
 }
 

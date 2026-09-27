@@ -145,7 +145,7 @@ func (a *app) execute(ctx context.Context, cmd commands.Command, args map[string
 		fmt.Fprintf(a.stderr, "Command: %s\n", cmd.ID)
 		fmt.Fprintf(a.stderr, "Action: %s\n", summary(cmd.Instruction()))
 		fmt.Fprintln(a.stderr, "Confirmation required.")
-		if !a.confirm() {
+		if !a.confirm("Continue? [y/N] ") {
 			fmt.Fprintln(a.stderr, "n: aborted")
 			return ExitFailure
 		}
@@ -159,13 +159,14 @@ func (a *app) execute(ctx context.Context, cmd commands.Command, args map[string
 	return ExitOK
 }
 
-// confirm asks the user to approve a command.
+// confirm asks the user a yes/no question, defaulting to no.
 //
-// The command's arguments are deliberately not echoed: a script may declare
-// values like passwords that should not be printed (NSCRIPT spec §14). Only
-// the command id and the first line of its instruction are shown.
-func (a *app) confirm() bool {
-	fmt.Fprint(a.stderr, "Continue? [y/N] ")
+// The question is passed in so that a destructive management action can use it
+// too. The command's arguments are deliberately not echoed by the caller: a
+// script may declare values like passwords that should not be printed
+// (NSCRIPT spec §14).
+func (a *app) confirm(question string) bool {
+	fmt.Fprint(a.stderr, question)
 	line, err := a.readLine()
 	if err != nil && strings.TrimSpace(line) == "" {
 		// No answer, or no terminal to answer from. Declining is the safe

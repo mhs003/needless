@@ -7,6 +7,8 @@ Usage:
   n --list-commands        list the available commands
   n --new-command [id]     create a new command
   n --edit-command [id]    open a command for editing
+  n --show-command [id]    print a command's source
+  n --remove [id]          delete a command
   n --help                 show this help
 
 Options:
@@ -17,6 +19,12 @@ Options:
                            create a new command
   -e, --edit, --edit-command [id]
                            open a command for editing
+  --show-command, --show [id]
+                           print a command's source
+  --remove [id]            delete a command, after asking
+
+Every management option that takes an [id] offers a numbered selection when the
+id is left out. n --remove asks before deleting, and treats no answer as "no".
 
 The prompt may be quoted or given as separate words; both forms are treated as
 one prompt:

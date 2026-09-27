@@ -330,6 +330,7 @@ Each entry records *why*, so it is not re-litigated.
 | D51 | The empty string is the *absence* of a value, uniformly: a required argument given `""` is unfilled; an argument with a default given `""` takes the default; `x: string = ""` still arrives as `""`. | A model with nothing to put in a slot still has to return a call, so it returns `""`. Reading that as a value ran scripts with a hole in them, which is how B1 surfaced. One rule with no exceptions is easier to hold than "empty means absent, except when…". Only the empty string counts — a single space is a value, and trimming it would be Needless editing the user's words. The rule lives in `resolveArgs`, not `coerce`, because it is about what a *required slot* means. |
 | D52 | The engine's telemetry is **off by default**: `Start` sets `NEEDLE_TELEMETRY=0` and `DO_NOT_TRACK=1` in the child's environment, but only for variables the caller has not already set. | Needless is a local, on-device tool, and a component that reports usage by default contradicts what the program is for. Doing it at `Start` means every caller gets it without opting in, and checking first means `NEEDLE_TELEMETRY=1` still works as an explicit opt-in — an empty value counting as a choice, not an omission. |
 | D53 | A command root that exists but is **not a directory** is an error. | Pointing a root at a file is always a mistake, and both silent outcomes were bad: walking a `.nsc` file produced a command whose id was literally `.` (its path relative to itself), and walking a non-`.nsc` file produced nothing with no explanation. D20 still holds next door — a root that does not *exist* is ordinary, because a fresh install has no commands yet. |
+| D54 | The lifecycle is completed with `--remove` and `--show-command`; removal always asks first, and re-checks the path against the command roots. | CLI spec §11 ends at "replace/delete" and only §12 names the flags, but being unable to delete a command you created by accident is a real gap. `--remove` is the one place Needless destroys something the user wrote, so the path is verified against the roots actually in use rather than trusted, and the confirmation defaults to no — which is also the safe reading of a piped, non-interactive invocation. `--show-command` writes the source to stdout, because the source *is* the output. |
 
 ---
 
@@ -526,6 +527,16 @@ Full list and detail: `needle/BINDINGS.md`.
 | `--edit-command <id>` | Prints the path and opens it in `$VISUAL`/`$EDITOR`. |
 | `--edit-command` with no id | Lists the commands and reads a number from stdin. |
 | `--edit-command` with an unknown id | Exit 1. |
+| `--show-command <id>` | Prints the path on stderr and the file on stdout, byte for byte (D54). |
+| `--show-command` with no id | Lists the commands and reads a number from stdin. |
+| `--show-command` with an unknown id | Exit 1; nothing on stdout. |
+| `--remove <id>`, user answers `y`/`yes` | The file is deleted; exit 0. |
+| `--remove` with anything else, or no terminal | Exit 1 and the file is kept — the safe reading of no answer (D54). |
+| `--remove` with an unknown id | Exit 1; nothing is deleted. |
+| `--remove` with no id | Lists the commands and reads a number; a bad choice exits 2. |
+| `--remove` when the path is not inside a command root | Refused, exit 1. Defence against a future discovery change, tested directly (D54). |
+| `--remove` in a directory of commands | Removes the file only; the directory is left in place. |
+| A management flag with a trailing argument | Exit 2; it is almost always a mistake. |
 | `$EDITOR` unset | Prints the path; not an error (D46). |
 | Ctrl-C during a command | The context is cancelled; the child stops and the script stops between statements. |
 

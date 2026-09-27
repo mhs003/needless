@@ -28,8 +28,52 @@ func (a *app) manage(opt options) int {
 		return a.newCommand(roots, opt.operand)
 	case modeEdit:
 		return a.editCommand(reg, opt.operand)
+	case modeRemove:
+		return a.removeCommand(reg, roots, opt.operand)
+	case modeShow:
+		return a.showCommand(reg, opt.operand)
 	}
 	return ExitUsage
+}
+
+// resolveCommand turns an id into a command, or asks which one when no id was
+// given. verb names the action in the message the user sees.
+//
+// The returned code is ExitOK when a command was chosen; any other value is the
+// exit code to return directly.
+func (a *app) resolveCommand(reg *commands.Registry, operand, verb string) (commands.Command, int) {
+	id := strings.TrimSuffix(strings.TrimSpace(operand), commands.Extension)
+	if id != "" {
+		cmd, ok := reg.Lookup(id)
+		if !ok {
+			fmt.Fprintf(a.stderr, "n: no command named %q\n", id)
+			return commands.Command{}, ExitFailure
+		}
+		return cmd, ExitOK
+	}
+
+	// No id given, so offer a selection.
+	cmds := reg.Commands()
+	if len(cmds) == 0 {
+		fmt.Fprintf(a.stderr, "n: there are no commands to %s\n", verb)
+		return commands.Command{}, ExitFailure
+	}
+	for i, c := range cmds {
+		fmt.Fprintf(a.stderr, "  %d) %s\n", i+1, c.ID)
+	}
+	fmt.Fprint(a.stderr, "Which command? ")
+	line, err := a.readLine()
+	if err != nil && strings.TrimSpace(line) == "" {
+		fmt.Fprintln(a.stderr)
+		fmt.Fprintln(a.stderr, "n: nothing chosen")
+		return commands.Command{}, ExitFailure
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil || n < 1 || n > len(cmds) {
+		fmt.Fprintf(a.stderr, "n: %q is not one of the listed commands\n", strings.TrimSpace(line))
+		return commands.Command{}, ExitUsage
+	}
+	return cmds[n-1], ExitOK
 }
 
 // list prints the available commands in the form the spec sketches.
@@ -93,42 +137,88 @@ func (a *app) newCommand(roots []string, operand string) int {
 
 // editCommand opens an existing command, asking which one if needed.
 func (a *app) editCommand(reg *commands.Registry, operand string) int {
-	id := strings.TrimSuffix(strings.TrimSpace(operand), commands.Extension)
-
-	if id == "" {
-		cmds := reg.Commands()
-		if len(cmds) == 0 {
-			fmt.Fprintln(a.stderr, "n: there are no commands to edit")
-			return ExitFailure
-		}
-		for i, c := range cmds {
-			fmt.Fprintf(a.stderr, "  %d) %s\n", i+1, c.ID)
-		}
-		fmt.Fprint(a.stderr, "Which command? ")
-		line, err := a.readLine()
-		if err != nil && strings.TrimSpace(line) == "" {
-			fmt.Fprintln(a.stderr)
-			fmt.Fprintln(a.stderr, "n: nothing chosen")
-			return ExitFailure
-		}
-		n, err := strconv.Atoi(strings.TrimSpace(line))
-		if err != nil || n < 1 || n > len(cmds) {
-			fmt.Fprintf(a.stderr, "n: %q is not one of the listed commands\n", strings.TrimSpace(line))
-			return ExitUsage
-		}
-		fmt.Fprintf(a.stderr, "%s\n", cmds[n-1].Path)
-		a.openEditor(cmds[n-1].Path)
-		return ExitOK
-	}
-
-	cmd, ok := reg.Lookup(id)
-	if !ok {
-		fmt.Fprintf(a.stderr, "n: no command named %q\n", id)
-		return ExitFailure
+	cmd, code := a.resolveCommand(reg, operand, "edit")
+	if code != ExitOK {
+		return code
 	}
 	fmt.Fprintf(a.stderr, "%s\n", cmd.Path)
 	a.openEditor(cmd.Path)
 	return ExitOK
+}
+
+// showCommand prints a command's source. It is a read, so nothing is asked.
+func (a *app) showCommand(reg *commands.Registry, operand string) int {
+	cmd, code := a.resolveCommand(reg, operand, "show")
+	if code != ExitOK {
+		return code
+	}
+
+	body, err := os.ReadFile(cmd.Path)
+	if err != nil {
+		fmt.Fprintf(a.stderr, "n: %v\n", err)
+		return ExitFailure
+	}
+	// The source is the requested output, so it goes to stdout and stays
+	// pipeable (D47). The path is a diagnostic and goes to stderr. The bytes
+	// are passed through exactly as stored, like `cat`.
+	fmt.Fprintf(a.stderr, "%s\n", cmd.Path)
+	if _, err := a.stdout.Write(body); err != nil {
+		fmt.Fprintf(a.stderr, "n: %v\n", err)
+		return ExitFailure
+	}
+	return ExitOK
+}
+
+// removeCommand deletes a command, after asking.
+//
+// This is the only place Needless destroys something the user wrote, so it is
+// deliberate at every step: the path is checked to be inside a command root
+// rather than trusted, the confirmation defaults to no, and the file is
+// removed rather than the directory, so nothing else goes with it.
+func (a *app) removeCommand(reg *commands.Registry, roots []string, operand string) int {
+	cmd, code := a.resolveCommand(reg, operand, "remove")
+	if code != ExitOK {
+		return code
+	}
+
+	if !withinRoots(cmd.Path, roots) {
+		fmt.Fprintf(a.stderr, "n: refusing to remove %s: it is not inside a command root\n", cmd.Path)
+		return ExitFailure
+	}
+
+	fmt.Fprintf(a.stderr, "%s\n", cmd.Path)
+	if !a.confirm("Remove this command? [y/N] ") {
+		fmt.Fprintf(a.stderr, "n: %s was not removed\n", cmd.ID)
+		return ExitFailure
+	}
+	if err := os.Remove(cmd.Path); err != nil {
+		fmt.Fprintf(a.stderr, "n: %v\n", err)
+		return ExitFailure
+	}
+
+	fmt.Fprintf(a.stderr, "Removed %s\n", cmd.ID)
+	return ExitOK
+}
+
+// withinRoots reports whether path lies inside one of the command roots.
+//
+// A command id is validated when it is created (validateID), but discovery
+// takes whatever the filesystem holds, so this re-checks against the roots
+// actually in use before deleting anything. The path must be a descendant, not
+// the root itself: `..` and `.` are refused.
+func withinRoots(path string, roots []string) bool {
+	clean := filepath.Clean(path)
+	for _, root := range roots {
+		rel, err := filepath.Rel(filepath.Clean(root), clean)
+		if err != nil {
+			continue
+		}
+		if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // openEditor hands the file to $VISUAL or $EDITOR.

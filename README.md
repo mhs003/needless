@@ -86,7 +86,10 @@ git status --short
 stdin, byte for byte — nscript never rewrites or interpolates it. Values reach
 it through the environment, which is why the example above sets `env`.
 
-`n --new-command` creates a file to start from, and `n --edit-command` opens one.
+`n --new-command` creates a file to start from, `n --edit-command` opens one,
+`n --show-command` prints one, and `n --remove` deletes one. Each accepts a
+command id and offers a numbered selection when you leave it out; `--remove`
+asks before deleting and treats no answer as "no".
 
 ---
 

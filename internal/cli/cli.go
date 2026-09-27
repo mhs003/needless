@@ -36,12 +36,14 @@ const (
 	modeList
 	modeNew
 	modeEdit
+	modeRemove
+	modeShow
 )
 
 // options is the result of parsing the command line.
 type options struct {
 	mode    mode
-	operand string // the identifier given to --new-command or --edit-command
+	operand string // the identifier given to --new-command, --edit-command, --remove or --show-command
 	prompt  string // the natural-language prompt, words joined by spaces
 }
 
@@ -93,7 +95,7 @@ func (a *app) main(ctx context.Context, args []string) int {
 	case modeHelp:
 		fmt.Fprint(a.stdout, usageText)
 		return ExitOK
-	case modeList, modeNew, modeEdit:
+	case modeList, modeNew, modeEdit, modeRemove, modeShow:
 		return a.manage(opt)
 	case modePrompt:
 		return a.prompt(ctx, opt.prompt)
@@ -135,6 +137,14 @@ func parseArgs(args []string) (options, error) {
 			opt.mode = modeEdit
 			i++
 			opt.operand, i = takeOperand(args, i)
+		case "--remove":
+			opt.mode = modeRemove
+			i++
+			opt.operand, i = takeOperand(args, i)
+		case "--show-command", "--show":
+			opt.mode = modeShow
+			i++
+			opt.operand, i = takeOperand(args, i)
 		default:
 			return opt, &usageError{msg: fmt.Sprintf("unknown option %q", arg)}
 		}
@@ -167,6 +177,10 @@ func modeName(m mode) string {
 		return "--new-command"
 	case modeEdit:
 		return "--edit-command"
+	case modeRemove:
+		return "--remove"
+	case modeShow:
+		return "--show-command"
 	}
 	return ""
 }
