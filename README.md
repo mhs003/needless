@@ -133,6 +133,18 @@ pipe. Needless' messages, and confirmation prompts, go to stderr.
 
 ---
 
+## Learn more
+
+- **[Writing commands](docs/writing-commands.md)** — how to word an
+  `instruction` so matching works, arguments and defaults, getting values into
+  an embedded script, and worked examples.
+- **[Configuration](docs/configuration.md)** — every config key, where the model
+  and engine are looked for, and the environment variables that exist.
+- **[Troubleshooting](docs/troubleshooting.md)** — what each error means and
+  what to do about it.
+
+---
+
 ## Developing
 
 ```sh

@@ -586,6 +586,11 @@ model.
   every example must parse, must be discoverable, must be usable as a fallback,
   and between them they must use every construct the language has. Examples are
   documentation, and an example that does not parse is worse than none.
+- **The same guard on the guides** (`internal/commands/docs_test.go`): every
+  fenced `nsc` block under `docs/` that declares both `instruction` and `run` is
+  presented as a complete command and must parse. Blocks showing one section in
+  isolation are fragments and are skipped, which is why the guides keep their
+  syntax-heavy examples whole.
 - **Stub engine** (`needle/internal/stubtest`) for the binding's error paths,
   driven by trigger substrings such as `FAIL_COMPLETE` and `TRUNCATE`.
 - **Fuzz targets** for the two places that read input neither process controls:

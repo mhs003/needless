@@ -117,7 +117,7 @@ go.mod                      module github.com/mhs003/needless
 Makefile                    build, test, install and diagnostics entry points
 README.md                   user-facing quick start and language summary
 .dev-docs/                  the v1 spec: CLI.md, NSCRIPT.md (local, untracked)
-docs/                       longer user-facing documentation (not yet present)
+docs/                       longer user-facing documentation
 models/                     needle3.cact (untracked, 34 MiB)
 needle/                     the Needle 3 Go binding (self-contained; see needle/BINDINGS.md)
 cmd/n/                      the `n` executable; wiring only
