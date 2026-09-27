@@ -304,3 +304,50 @@ func TestDiscoverReportsEveryBrokenCommand(t *testing.T) {
 		t.Fatalf("errors = %v, want 2", reg.Errors())
 	}
 }
+
+// TestDiscoverRejectsARootThatIsAFile pins D53. Both silent outcomes are wrong:
+// walking a .nsc file produced a command whose id was literally "." (the path
+// relative to itself), and walking a non-.nsc file produced nothing at all
+// with no explanation.
+func TestDiscoverRejectsARootThatIsAFile(t *testing.T) {
+	dir := t.TempDir()
+
+	for _, tc := range []struct {
+		name string
+		file string
+	}{
+		{name: "a script", file: writeCmd(t, dir, "single.nsc", script("A command."))},
+		{name: "not a script", file: writeCmd(t, dir, "notes.txt", "just some notes\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := Discover(tc.file)
+
+			if reg.Len() != 0 {
+				t.Errorf("ids = %v, want no commands from a file root", ids(reg))
+			}
+			errs := reg.Errors()
+			if len(errs) != 1 {
+				t.Fatalf("errors = %v, want exactly one explaining the misconfiguration", errs)
+			}
+			if !strings.Contains(errs[0].Err.Error(), "not a directory") {
+				t.Errorf("error = %v, want it to say the root is not a directory", errs[0])
+			}
+			if errs[0].Path != tc.file {
+				t.Errorf("error path = %q, want the root %q", errs[0].Path, tc.file)
+			}
+		})
+	}
+}
+
+// TestDiscoverStillToleratesAMissingRoot guards the rule next door: D20 says a
+// root that does not exist is ordinary, and tightening D53 must not change it.
+func TestDiscoverStillToleratesAMissingRoot(t *testing.T) {
+	reg := Discover(filepath.Join(t.TempDir(), "not-there"))
+
+	if reg.Len() != 0 {
+		t.Errorf("ids = %v, want none", ids(reg))
+	}
+	if len(reg.Errors()) != 0 {
+		t.Errorf("errors = %v, want none for a missing root (D20)", reg.Errors())
+	}
+}

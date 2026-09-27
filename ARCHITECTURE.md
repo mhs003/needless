@@ -329,6 +329,7 @@ Each entry records *why*, so it is not re-litigated.
 | D50 | A required argument with no usable value is a **refusal**, not an error: `Result.Unfilled` is set, `Matched` is false, and `Command` names the command that could not be filled. | The model did nothing wrong and neither did the user — the prompt simply does not carry enough. Returning an error reported an ordinary outcome as a malfunction, and an error does not reach the fallback, which is precisely the "I could not do that" handler. Malformed replies (undeclared argument, uncoercible value, name outside the declared set) stay errors, because those signal a bug rather than an incomplete prompt. See B1. |
 | D51 | The empty string is the *absence* of a value, uniformly: a required argument given `""` is unfilled; an argument with a default given `""` takes the default; `x: string = ""` still arrives as `""`. | A model with nothing to put in a slot still has to return a call, so it returns `""`. Reading that as a value ran scripts with a hole in them, which is how B1 surfaced. One rule with no exceptions is easier to hold than "empty means absent, except when…". Only the empty string counts — a single space is a value, and trimming it would be Needless editing the user's words. The rule lives in `resolveArgs`, not `coerce`, because it is about what a *required slot* means. |
 | D52 | The engine's telemetry is **off by default**: `Start` sets `NEEDLE_TELEMETRY=0` and `DO_NOT_TRACK=1` in the child's environment, but only for variables the caller has not already set. | Needless is a local, on-device tool, and a component that reports usage by default contradicts what the program is for. Doing it at `Start` means every caller gets it without opting in, and checking first means `NEEDLE_TELEMETRY=1` still works as an explicit opt-in — an empty value counting as a choice, not an omission. |
+| D53 | A command root that exists but is **not a directory** is an error. | Pointing a root at a file is always a mistake, and both silent outcomes were bad: walking a `.nsc` file produced a command whose id was literally `.` (its path relative to itself), and walking a non-`.nsc` file produced nothing with no explanation. D20 still holds next door — a root that does not *exist* is ordinary, because a fresh install has no commands yet. |
 
 ---
 
@@ -539,6 +540,9 @@ Full list and detail: `needle/BINDINGS.md`.
 | Config file with an unknown key | Error naming the key — a misspelled key must not silently do nothing (D23). |
 | Config file with a second document after the object | Error; the file is not half-read, which almost always means a truncated edit. |
 | Blank entry in `command_roots` | Dropped, so it cannot resolve to the working directory and pick up stray scripts (D26). |
+| A `command_roots` entry that does not exist | Treated as empty; a fresh install has no commands yet (D20). |
+| A `command_roots` entry that is a file, not a directory | Reported as "command root is not a directory" and skipped; no command is loaded from it (D53). |
+| The same command id under two roots | The first root in order wins, so a user's own directory shadows a shared one (D18). |
 | `~` in a configured path | Expanded against the home directory before use. |
 | `weights` names a file that does not exist | Reported by the binding; Needless does not second-guess an explicit path. |
 | No model archive found anywhere | Error naming the `weights` key and the places that were searched. |

@@ -16,8 +16,9 @@ import (
 // earlier root wins, so a user's own directory can shadow a shared one.
 //
 // A root that does not exist is not an error: a fresh install has no commands
-// yet. A file that fails to parse is recorded in Errors and skipped, so one
-// broken script never hides the rest.
+// yet. A root that exists but is not a directory is an error, because that is
+// always a mistake rather than a state. A file that fails to parse is recorded
+// in Errors and skipped, so one broken script never hides the rest.
 //
 // Where the roots come from is the config package's business; discovery only
 // walks what it is given.
@@ -37,6 +38,19 @@ func Discover(roots ...string) *Registry {
 }
 
 func walkRoot(reg *Registry, seen map[string]bool, root string) error {
+	// A root must be a directory. Pointing one at a file is a misconfiguration
+	// worth reporting, and both silent outcomes are bad: loading the file would
+	// give the command the id "." (its path relative to itself), and ignoring
+	// it would leave the user wondering why none of their commands appeared
+	// (D53).
+	if info, err := os.Stat(root); err == nil && !info.IsDir() {
+		reg.errs = append(reg.errs, LoadError{
+			Path: root,
+			Err:  errors.New("command root is not a directory"),
+		})
+		return nil
+	}
+
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// A missing root is the ordinary state of a fresh install.
