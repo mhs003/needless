@@ -15,7 +15,7 @@ import (
 // location.
 //
 // A missing file is not an error: it yields the zero Config, which is the
-// state of a fresh install (D20).
+// state of a fresh install (D24).
 //
 // Unknown fields are rejected rather than ignored. A misspelled key in a
 // hand-written configuration file is a mistake worth reporting, and silently

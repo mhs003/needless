@@ -284,7 +284,7 @@ Each entry records *why*, so it is not re-litigated.
 | D5 | An unmatched prompt is **not** an error. | Spec §4 and "No-match is a normal state". Triggers the configured fallback or an empty result. |
 | D6 | The fallback is an ordinary nscript command selected by config. | Spec §5. It can be edited or removed without touching the CLI. |
 | D7 | Confirmation is declared by the script, performed by the CLI. | Spec §8. Keeps the language free of UI concerns. |
-| D8 | `n` builds `needle-worker` on demand if missing. | The worker must exist at runtime; asking users to run a second build command is friction. |
+| D8 | The worker is **discovered, not built on demand**: `needle-worker` beside the executable, then `$NEEDLE_WORKER`, then `$PATH`, and an explicit error if none is found. | An earlier draft had `n` build the worker at runtime to save the user a second command. That needs a Go toolchain and the source tree on the user's machine, which a shipped binary does not have, so it only ever works in the one case where `make build` already covers it. A missing worker is a packaging error, and saying so is better than silently doing a build. |
 | D9 | The lexer is context-sensitive in exactly one place: the word after `exec`. | An interpreter may be a path (`/usr/bin/php`), and `/` is otherwise division. Using the preceding keyword as context is exact; guessing from the text's shape is not. |
 | D10 | Triple-quoted strings and `<<( )<<` bodies are stored verbatim — no escape processing, no trimming, no re-indenting. | The block body is source for another interpreter; normalising it corrupts it (AGENTS.md trap). Prose whitespace is harmless to the model. |
 | D11 | Newlines are significant tokens; spaces, tabs and `//` comments are not. | Statements are newline-separated with no semicolons (NSCRIPT spec §7). Newline tokens give precise "expected a statement" errors instead of silently gluing two statements together. |
@@ -328,6 +328,7 @@ Each entry records *why*, so it is not re-litigated.
 | D49 | `internal/cli` takes its streams and a model factory as inputs, and `Main` never calls `os.Exit`. | The whole CLI, including the prompt, confirmation and fallback paths, is then testable without a process or the model. |
 | D50 | A required argument with no usable value is a **refusal**, not an error: `Result.Unfilled` is set, `Matched` is false, and `Command` names the command that could not be filled. | The model did nothing wrong and neither did the user — the prompt simply does not carry enough. Returning an error reported an ordinary outcome as a malfunction, and an error does not reach the fallback, which is precisely the "I could not do that" handler. Malformed replies (undeclared argument, uncoercible value, name outside the declared set) stay errors, because those signal a bug rather than an incomplete prompt. See B1. |
 | D51 | The empty string is the *absence* of a value, uniformly: a required argument given `""` is unfilled; an argument with a default given `""` takes the default; `x: string = ""` still arrives as `""`. | A model with nothing to put in a slot still has to return a call, so it returns `""`. Reading that as a value ran scripts with a hole in them, which is how B1 surfaced. One rule with no exceptions is easier to hold than "empty means absent, except when…". Only the empty string counts — a single space is a value, and trimming it would be Needless editing the user's words. The rule lives in `resolveArgs`, not `coerce`, because it is about what a *required slot* means. |
+| D52 | The engine's telemetry is **off by default**: `Start` sets `NEEDLE_TELEMETRY=0` and `DO_NOT_TRACK=1` in the child's environment, but only for variables the caller has not already set. | Needless is a local, on-device tool, and a component that reports usage by default contradicts what the program is for. Doing it at `Start` means every caller gets it without opting in, and checking first means `NEEDLE_TELEMETRY=1` still works as an explicit opt-in — an empty value counting as a choice, not an omission. |
 
 ---
 
@@ -528,6 +529,20 @@ Full list and detail: `needle/BINDINGS.md`.
 | Ctrl-C during a command | The context is cancelled; the child stops and the script stops between statements. |
 
 ### Application
+
+| Case | Behaviour |
+|---|---|
+| The engine's telemetry variables are already set | Left exactly as the caller set them; `NEEDLE_TELEMETRY=1` opts back in, and an empty value counts as a choice rather than an omission (D52). |
+| Neither telemetry variable is set | `NEEDLE_TELEMETRY=0` and `DO_NOT_TRACK=1` are added to the child's environment (D52). |
+| Config file missing | The defaults are used; not an error (D24). |
+| Config file empty or only whitespace | The defaults are used, with `Config.Path` still recorded (D24). |
+| Config file with an unknown key | Error naming the key — a misspelled key must not silently do nothing (D23). |
+| Config file with a second document after the object | Error; the file is not half-read, which almost always means a truncated edit. |
+| Blank entry in `command_roots` | Dropped, so it cannot resolve to the working directory and pick up stray scripts (D26). |
+| `~` in a configured path | Expanded against the home directory before use. |
+| `weights` names a file that does not exist | Reported by the binding; Needless does not second-guess an explicit path. |
+| No model archive found anywhere | Error naming the `weights` key and the places that were searched. |
+| An explicit `weights` | Used verbatim; the search order is not consulted. |
 
 ---
 

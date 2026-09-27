@@ -354,6 +354,8 @@ real engine to exercise an error path.
   20-layer archive). Reuse one `Needle` rather than creating them per request.
 - **No `needle_build`-style depth selection** in the binding: the depth is a
   property of the `.cact` file you pass in, produced by upstream tooling.
-- **Telemetry**: the upstream binary enables telemetry by default. Set
-  `NEEDLE_TELEMETRY=0` and `DO_NOT_TRACK=1` in the worker's environment if you
-  want it off. The binding does not set these for you.
+- **Telemetry is off by default** (D52). `Start` sets `NEEDLE_TELEMETRY=0` and
+  `DO_NOT_TRACK=1` in the child's environment, but only when those variables
+  are not already defined — so exporting `NEEDLE_TELEMETRY=1` opts back in, and
+  an empty value counts as a deliberate choice rather than an omission. The
+  policy is the pure function `workerEnv`, so it is tested without a process.

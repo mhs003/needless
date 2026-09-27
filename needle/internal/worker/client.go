@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,6 +65,47 @@ func (w *Worker) PID() int {
 	return w.cmd.Process.Pid
 }
 
+// telemetryEnv are the variables the upstream engine reads to disable its own
+// usage reporting.
+var telemetryEnv = []string{"NEEDLE_TELEMETRY=0", "DO_NOT_TRACK=1"}
+
+// workerEnv returns the child's environment with the engine's telemetry
+// disabled.
+//
+// Needless is a local, on-device tool, and a component that reports usage by
+// default contradicts what the program is for. The opt-out is applied here
+// because Start is the one choke point every caller passes through, and it is
+// applied *only when the variable is not already set*, so a user who exports
+// NEEDLE_TELEMETRY=1 still opts back in (D52).
+//
+// It is a pure function of its input so the policy is testable without
+// spawning a process.
+func workerEnv(base []string) []string {
+	out := make([]string, 0, len(base)+len(telemetryEnv))
+	out = append(out, base...)
+
+	for _, kv := range telemetryEnv {
+		name, _, _ := strings.Cut(kv, "=")
+		if !envHas(base, name) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// envHas reports whether base already defines name. An empty value counts as
+// defined: `NEEDLE_TELEMETRY=` is a choice, not an omission, and overriding it
+// would be ignoring what the user said.
+func envHas(base []string, name string) bool {
+	prefix := name + "="
+	for _, kv := range base {
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // Start spawns the worker child, sends the config, and waits for the "ready"
 // frame. workerPath overrides discovery of the child binary (tests use it).
 //
@@ -95,6 +137,8 @@ func Start(ctx context.Context, workerPath string, cfg Config) (*Worker, error) 
 	// only for the initial handshake below.
 	cmd := exec.Command(path, "--child")
 	cmd.Stderr = os.Stderr
+	// Inherited, minus the engine's telemetry (D52).
+	cmd.Env = workerEnv(os.Environ())
 
 	// The pipes are created explicitly rather than with StdinPipe/StdoutPipe.
 	// Wait() closes the pipes those helpers hand back, and it runs in the
